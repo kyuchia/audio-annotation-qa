@@ -13,3 +13,6 @@ out/
 # beside them. demo-data/ is tracked on purpose.
 vocadito-full/
 recordings/
+.claude/
+.agents/
+skills-lock.json
