@@ -103,7 +103,10 @@ CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
 DATA_ROOT = os.environ.get("DATA_ROOT", "/data")
 
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = os.environ.get("TZ", "Asia/Taipei")
+#: UTC by default. Timestamps are stored in UTC either way (USE_TZ is on); this decides
+#: only how they are rendered, and a server-local default makes a log line or an
+#: imported_at mean something different depending on where the process happens to run.
+TIME_ZONE = os.environ.get("TZ", "UTC")
 USE_I18N = True
 USE_TZ = True
 

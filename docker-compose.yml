@@ -24,7 +24,7 @@ services:
       POSTGRES_HOST: db
       DJANGO_DEBUG: "1"
       DATA_ROOT: /data
-      TZ: Asia/Taipei
+      TZ: UTC
     volumes:
       - .:/app
       # The dataset is mounted read-only. The importer only reads headers and the CSV;
