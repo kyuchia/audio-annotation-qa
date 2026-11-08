@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+staticfiles/
+media/
+node_modules/
+frontend/dist/
+.DS_Store
+out/
+
+# Read-only source data kept outside the repo: the full upstream dataset, and the
+# recordings tree for corpora whose annotations were made against audio not shipped
+# beside them. demo-data/ is tracked on purpose.
+vocadito-full/
+recordings/

@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: annotations
+      POSTGRES_USER: annotations
+      POSTGRES_PASSWORD: annotations
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"          # 5433 keeps clear of a postgres already running on the host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U annotations"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  django:
+    build: .
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    environment:
+      POSTGRES_HOST: db
+      DJANGO_DEBUG: "1"
+      DATA_ROOT: /data
+      TZ: Asia/Taipei
+    volumes:
+      - .:/app
+      # The dataset is mounted read-only. The importer only reads headers and the CSV;
+      # it never writes back into the source directory.
+      - ${DATASET_ROOT:-./demo-data}:/data:ro
+      # Original recordings, one directory per item, for corpora whose annotations were
+      # made against audio that is not shipped beside them. Read-only and gitignored; the
+      # demo corpus does not need it, and an absent ./recordings mounts empty.
+      - ${RECORDING_ROOT:-./recordings}:/recordings:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    image: node:20-slim
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_BASE: http://localhost:8000/api
+    volumes:
+      - ./frontend:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - django
+
+volumes:
+  pgdata:
+  node_modules:

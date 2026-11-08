@@ -1,0 +1,179 @@
+/*
+  What this interface is: an instrument panel that researchers and reviewers stare at
+  for long stretches, not a showcase page. Hence the choices below: a desaturated cool
+  grey ground, high information density, tabular figures everywhere numbers appear, and
+  colour reserved for exactly two jobs — severity, and telling one annotation stream
+  from another.
+
+  The one place we allow a real visual focal point is the coverage rail (CoverageRail).
+  It answers "how far do the annotations reach, and how much is missing at the end" at a
+  glance. Everything else stays quiet so that it can.
+*/
+
+:root {
+  --surface: #eef1f3;
+  --panel: #ffffff;
+  --panel-sunk: #f6f8f9;
+  --ink: #10161c;
+  --ink-muted: #5c6a75;
+  --ink-faint: #8b98a2;
+  --rule: #d3dbe0;
+  --rule-strong: #b6c2c9;
+
+  --accent: #1b4b6b;
+  --accent-soft: #e4edf2;
+  --error: #a32c1e;
+  --error-soft: #f8e8e6;
+  --warn: #8a6a12;
+  --warn-soft: #faf1dc;
+  --ok: #1e6b4f;
+  --ok-soft: #e4f0ea;
+
+  /* Voice colours are aligned with the SV colourName values used by the .sv export,
+     so the same part looks the same in the console and in Sonic Visualiser. */
+  /* One colour per parallel stream in a view, assigned by order rather than by name:
+     a name-to-colour table only covers the names it was written with. */
+  --stream-1: #6b4ba8;
+  --stream-2: #1e6b4f;
+  --stream-3: #b5651d;
+  --stream-4: #1b4b6b;
+
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --cond: 'IBM Plex Sans Condensed', 'Noto Sans TC', sans-serif;
+  --sans: 'IBM Plex Sans', 'Noto Sans TC', system-ui, sans-serif;
+
+  --r: 3px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, th, .eyebrow {
+  font-family: var(--cond);
+  letter-spacing: 0.01em;
+}
+
+h1 { font-size: 20px; margin: 0; font-weight: 700; }
+h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+h3 { font-size: 13px; margin: 0 0 6px; font-weight: 600; }
+
+.eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.num, code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+a { color: var(--accent); }
+
+button, .btn {
+  font: inherit;
+  font-family: var(--cond);
+  font-weight: 600;
+  font-size: 13px;
+  border: 1px solid var(--rule-strong);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: var(--r);
+  padding: 5px 11px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+button:hover, .btn:hover { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #143b55; color: #fff; }
+button.danger:hover { border-color: var(--error); color: var(--error); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+input, select, textarea {
+  font: inherit;
+  font-family: var(--sans);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  padding: 5px 8px;
+  background: var(--panel);
+  color: var(--ink);
+  max-width: 100%;
+}
+input[type='number'], input.num { font-family: var(--mono); }
+label { font-size: 12px; color: var(--ink-muted); display: block; margin-bottom: 3px; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  padding: 14px 16px;
+}
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+  font-weight: 600;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+td { padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+tbody tr:hover { background: var(--panel-sunk); }
+
+.tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.tag.error { background: var(--error-soft); color: var(--error); border-color: #e8c4bf; }
+.tag.warning { background: var(--warn-soft); color: var(--warn); border-color: #e8dcb8; }
+.tag.info { background: var(--panel-sunk); color: var(--ink-muted); border-color: var(--rule); }
+.tag.ok { background: var(--ok-soft); color: var(--ok); border-color: #c2ddd0; }
+.tag.accent { background: var(--accent-soft); color: var(--accent); border-color: #c3d8e3; }
+
+.muted { color: var(--ink-muted); }
+.faint { color: var(--ink-faint); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+.spread { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+
+.note {
+  font-size: 12px;
+  color: var(--ink-muted);
+  border-left: 2px solid var(--rule-strong);
+  padding-left: 9px;
+}
+
+.error-box {
+  background: var(--error-soft);
+  border: 1px solid #e8c4bf;
+  color: var(--error);
+  padding: 8px 11px;
+  border-radius: var(--r);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
