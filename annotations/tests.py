@@ -27,6 +27,7 @@ import wave
 from pathlib import Path
 
 from django.conf import settings
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
@@ -42,6 +43,7 @@ from .comparators.pitch_interval import (
 )
 from .exporters import item_to_session, layer_to_svl, sort_layers_by_stream
 from .importers.f0_csv import CONTRACTS, FROM_HEADER, F0ParseError, parse_f0_csv
+from .admin import AnnotationLayerAdmin, CorpusAdmin, ItemAdmin
 from .models import AnnotationLayer, Corpus, Item, LayerComparison, Segment
 from .registry import LAYER_TYPES, VALIDATORS, get_layer_type
 from .services.compare import run_comparison, store_default_comparisons
@@ -847,6 +849,73 @@ class OpenIssueFilterTests(Fixtures):
 
         self.assertEqual(self.status_of(unprobed), (1, 0))
         self.assertEqual(self.listed(), [unprobed.song_id])
+
+
+class AdminBadgeTests(Fixtures):
+    """
+    The admin's "Open issues" column and the app's status column describe the same rows,
+    so a researcher moving between them sees one number. Both count the findings of the
+    latest run that covered each target, in the severities that mean something is wrong.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.make_layer(self.scale_rows(n=19, start=0.5, step=1.0, dur=0.9), stream="A1")
+
+    def badge(self, admin_class, model, obj):
+        return str(admin_class(model, admin.site).issue_badge(obj))
+
+    def claim_duration(self, item, seconds):
+        item.metadata_row = {"duration_sec": seconds}
+        item.save(update_fields=["metadata_row"])
+
+    def test_the_item_badge_counts_a_finding_once_across_runs(self):
+        self.claim_duration(self.item, DURATION_SEC + 5.0)
+        run_for_item(self.item)
+        run_for_item(self.item)
+
+        badge = self.badge(ItemAdmin, Item, self.item)
+
+        self.assertIn("1 warnings", badge)
+        self.assertNotIn("2 warnings", badge)
+
+    def test_the_item_badge_reads_clean_for_info_findings_alone(self):
+        run_for_item(self.item)
+
+        self.assertIn("clean", self.badge(ItemAdmin, Item, self.item))
+
+    def test_the_corpus_badge_counts_a_finding_once_across_runs(self):
+        unprobed = self.make_item("item_unprobed", sample_rate=None)
+        run_for_item(unprobed)
+        run_for_item(unprobed)
+
+        badge = self.badge(CorpusAdmin, Corpus, self.corpus)
+
+        self.assertIn("1 errors", badge)
+        self.assertNotIn("2 errors", badge)
+
+    def test_the_layer_badge_counts_a_finding_once_across_runs(self):
+        # Covers the recording, so the one warning is the overlap and nothing else.
+        rows = self.scale_rows(n=19, start=0.5, step=1.0, dur=0.9)
+        rows[1]["start_sec"] = 1.2
+        overlapping = self.make_layer(rows, stream="B1")
+        run_for_layer(overlapping)
+        run_for_layer(overlapping)
+
+        badge = self.badge(AnnotationLayerAdmin, AnnotationLayer, overlapping)
+
+        self.assertIn("1 warnings", badge)
+        self.assertNotIn("2 warnings", badge)
+
+    def test_the_badge_agrees_with_the_item_lists_own_counts(self):
+        self.claim_duration(self.item, DURATION_SEC + 5.0)
+        run_for_item(self.item)
+        run_for_item(self.item)
+
+        row = APIClient().get(f"/api/items/?q={self.item.song_id}").data["results"][0]
+
+        self.assertEqual((row["open_error_count"], row["open_warning_count"]), (0, 1))
+        self.assertIn(f"{row['open_warning_count']} warnings", self.badge(ItemAdmin, Item, self.item))
 
 
 class StoredComparisonApiTests(Fixtures):

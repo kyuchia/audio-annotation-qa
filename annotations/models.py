@@ -735,6 +735,14 @@ class ValidationRun(TimeStamped):
         return f"Validation run #{self.pk} · {target}"
 
 
+# The severities that mean something is wrong. An info finding reports a measurement —
+# how much of a recording an annotation covers, how many items carry a metadata row — and
+# a target carrying only those has nothing outstanding. Every surface that answers "does
+# this need attention" counts these two, so that the item list, the "Errors and warnings"
+# filter and the admin's badges cannot disagree about one row.
+NEEDS_ATTENTION = ("error", "warning")
+
+
 class ValidationIssueQuerySet(models.QuerySet):
     """
     Findings accumulate. Every run writes its own rows, so after six runs of the same

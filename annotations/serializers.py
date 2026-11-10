@@ -5,6 +5,7 @@ from django.db.models.functions import Coalesce
 from rest_framework import serializers
 
 from .models import (
+    NEEDS_ATTENTION,
     Adjudication,
     AnnotationLayer,
     Corpus,
@@ -135,14 +136,6 @@ class LayerSerializer(serializers.ModelSerializer):
         if errs:
             raise serializers.ValidationError({"params": errs})
         return attrs
-
-
-# What the item list treats as something to look at. An info finding states a fact about
-# the data — how much of a recording an annotation covers, how many items carry a metadata
-# row — and an item carrying only those has nothing outstanding. The status column has
-# always counted these two severities; anything else selecting items has to agree with it,
-# or the same page says both "clean" and "open issues" about the same row.
-NEEDS_ATTENTION = ("error", "warning")
 
 
 def item_issues(item_ref, severities=None):

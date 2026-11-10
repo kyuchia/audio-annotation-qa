@@ -19,6 +19,7 @@ from django.utils.safestring import mark_safe
 
 from .exporters import ExportError, item_to_session, suggested_session_filename
 from .models import (
+    NEEDS_ATTENTION,
     Adjudication,
     AnnotationLayer,
     Corpus,
@@ -54,10 +55,7 @@ class CorpusAdmin(admin.ModelAdmin):
 
     @admin.display(description="Open issues")
     def issue_badge(self, obj):
-        qs = ValidationIssue.objects.filter(item__corpus=obj, acknowledged=False)
-        errors = qs.filter(severity="error").count()
-        warnings = qs.filter(severity="warning").count()
-        return _severity_badge(errors, warnings)
+        return _open_badge(ValidationIssue.objects.filter(item__corpus=obj))
 
     @admin.action(description="Rescan a vocadito tree and import (reads headers, ignores .asd)")
     def action_ingest(self, request, queryset):
@@ -188,8 +186,7 @@ class ItemAdmin(admin.ModelAdmin):
 
     @admin.display(description="Open issues")
     def issue_badge(self, obj):
-        qs = obj.issues.filter(acknowledged=False)
-        return _severity_badge(qs.filter(severity="error").count(), qs.filter(severity="warning").count())
+        return _open_badge(obj.issues.all())
 
     @admin.display(description="Raw metadata row")
     def metadata_row_pretty(self, obj):
@@ -325,8 +322,7 @@ class AnnotationLayerAdmin(admin.ModelAdmin):
 
     @admin.display(description="Open issues")
     def issue_badge(self, obj):
-        qs = obj.issues.filter(acknowledged=False)
-        return _severity_badge(qs.filter(severity="error").count(), qs.filter(severity="warning").count())
+        return _open_badge(obj.issues.all())
 
     @admin.display(description="Lineage")
     def lineage_view(self, obj):
@@ -441,6 +437,26 @@ class AdjudicationAdmin(admin.ModelAdmin):
 class LayerCorrectionAdmin(admin.ModelAdmin):
     list_display = ("layer", "kind", "params", "is_active", "created_by", "created_at")
     list_filter = ("kind", "is_active")
+
+
+def _open_badge(issues):
+    """
+    The badge for a row, counted the way the app counts: the findings from the latest run
+    that covered each target, in the two severities that mean something is wrong.
+
+    Counting the rows as they sit would report every run's copy of the same finding, so an
+    item checked six times would read "18 errors" in the admin and "3 findings" in the app
+    about the very same data.
+    """
+    counts = {
+        row["severity"]: row["n"]
+        for row in issues.unacknowledged()
+        .current()
+        .filter(severity__in=NEEDS_ATTENTION)
+        .values("severity")
+        .annotate(n=Count("id"))
+    }
+    return _severity_badge(counts.get("error", 0), counts.get("warning", 0))
 
 
 def _severity_badge(errors: int, warnings: int):

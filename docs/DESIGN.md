@@ -270,7 +270,7 @@ Copy `.env.example` to `.env` and edit. Everything is read from the environment.
 | `DATASET_ROOT` | `./demo-data` | Host directory mounted read-only at `/data`. A corpus's `root_path` is a path beneath it |
 | `RECORDING_ROOT` | `./recordings` | Host directory mounted read-only at `/recordings`, for a corpus whose annotations were made against audio not shipped beside them |
 | `DJANGO_SECRET_KEY` | a development placeholder | **Change this for any non-local installation.** It signs sessions and password-reset tokens |
-| `DJANGO_DEBUG` | `0` | Off unless set to `1`; with it on, error responses expose tracebacks and settings. `docker-compose.yml` sets it to `1` for local development |
+| `DJANGO_DEBUG` | `0` | Off unless set to `1`; with it on, error responses expose tracebacks and settings. `docker-compose.yml` defaults it to `1` for local development, and `.env` overrides that |
 | `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated hostnames this installation answers to. Avoid `*` |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` / `_HOST` / `_PORT` | `annotations` / `annotations` / `annotations` / `db` / `5432` | Database connection |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Origins allowed to call the API with credentials. Also used for `CSRF_TRUSTED_ORIGINS` |

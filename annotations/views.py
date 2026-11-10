@@ -14,6 +14,7 @@ from .importers import parse_f0_csv
 from .importers.f0_csv import F0ParseError
 from .params import ParamError, validator_params
 from .models import (
+    NEEDS_ATTENTION,
     Adjudication,
     AnnotationLayer,
     Corpus,
@@ -27,7 +28,6 @@ from .models import (
 )
 from .services.compare import ComparisonError, run_comparison
 from .serializers import (
-    NEEDS_ATTENTION,
     item_issues,
     AdjudicationSerializer,
     CorpusSerializer,

@@ -1,16 +1,26 @@
+# Every setting a deployment might change is read from the environment, which docker
+# compose fills from .env in this directory. Each one carries the same default the
+# application itself uses, so the stack also starts with no .env at all.
+
+# Written once and merged into both services. The password the database container creates
+# and the password Django connects with have to be the same string, and two separate
+# lists is how they stop being.
+x-postgres-credentials: &postgres-credentials
+  POSTGRES_DB: "${POSTGRES_DB:-annotations}"
+  POSTGRES_USER: "${POSTGRES_USER:-annotations}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-annotations}"
+
 services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: annotations
-      POSTGRES_USER: annotations
-      POSTGRES_PASSWORD: annotations
+      <<: *postgres-credentials
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5433:5432"          # 5433 keeps clear of a postgres already running on the host
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U annotations"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-annotations}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -21,10 +31,22 @@ services:
       sh -c "python manage.py migrate --noinput &&
              python manage.py runserver 0.0.0.0:8000"
     environment:
-      POSTGRES_HOST: db
-      DJANGO_DEBUG: "1"
+      <<: *postgres-credentials
+      # The service name on this network, and the port inside the container. The 5433
+      # above is the host's way in and has nothing to do with this.
+      POSTGRES_HOST: "${POSTGRES_HOST:-db}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      # On for a local stack, where a traceback in the browser is the point, and set to 0
+      # in .env for anything reachable by someone else.
+      DJANGO_DEBUG: "${DJANGO_DEBUG:-1}"
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-dev-only-not-for-production}"
+      DJANGO_ALLOWED_HOSTS: "${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      # The container side of the dataset mount below. DATASET_ROOT chooses what is
+      # mounted there; this is where it lands, which is fixed.
       DATA_ROOT: /data
-      TZ: UTC
+      TZ: "${TZ:-UTC}"
     volumes:
       - .:/app
       # The dataset is mounted read-only. The importer only reads headers and the CSV;
