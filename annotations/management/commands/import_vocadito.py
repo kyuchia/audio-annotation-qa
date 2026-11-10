@@ -14,6 +14,10 @@ independent: neither becomes the parent of the other, each is version 1, and nei
 marked superseded. Frame-level F0 is not imported — services/vocadito.py explains why, and
 the command repeats the reason in its output rather than leaving the files silently skipped.
 
+Each excerpt annotated by both streams also gets its default comparison stored, through
+the same service the API uses, so an imported corpus can be read without anyone first
+pressing a button. Importing again finds those comparisons and leaves them as they are.
+
 No tuning reference is passed. vocadito publishes none, and inventing a global one would
 make the cents comparison wrong for every excerpt that does not happen to match it; the
 comparison falls back to A4=440 for both layers, which cancels out when the two layers
@@ -22,6 +26,7 @@ being compared share it.
 from django.core.management.base import BaseCommand, CommandError
 
 from annotations.models import Corpus
+from annotations.services.compare import store_default_comparisons
 from annotations.services.vocadito import METADATA_CSV, ingest_vocadito
 from annotations.validators import run_for_corpus
 
@@ -130,6 +135,17 @@ class Command(BaseCommand):
         if o["dry_run"]:
             self.stdout.write(self.style.WARNING("dry run: rolled back, the database is unchanged"))
             return
+
+        comparisons = store_default_comparisons(corpus)
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{comparisons.created} default comparisons stored"
+                + (f", {comparisons.kept} already present" if comparisons.kept else "")
+            )
+        )
+        for reason in comparisons.skipped:
+            self.stdout.write(self.style.WARNING(f"  ! comparison skipped — {reason}"))
+
         if o["validate"]:
             run = run_for_corpus(corpus)
             self.stdout.write(

@@ -2,9 +2,12 @@
 Test suite.
 
 Every fixture here is synthetic and built in code: tones at round frequencies, onsets on a
-tenth of a second, WAV files written by the stdlib. Nothing reads demo-data, and nothing
-depends on a particular corpus being imported, so the suite says what the code does rather
-than what one dataset happens to contain.
+tenth of a second, WAV files written by the stdlib, so the suite says what the code does
+rather than what one dataset happens to contain.
+
+DemoImportComparisonTests is the one exception, and deliberately so: the landing page
+quotes figures from the demo corpus, and a number printed on a public page needs a test
+that fails when the data behind it changes. It is the only class that reads demo-data.
 
 Two conventions worth knowing before reading:
 
@@ -23,8 +26,10 @@ import tempfile
 import wave
 from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -39,6 +44,7 @@ from .exporters import item_to_session, layer_to_svl, sort_layers_by_stream
 from .importers.f0_csv import CONTRACTS, FROM_HEADER, F0ParseError, parse_f0_csv
 from .models import AnnotationLayer, Corpus, Item, LayerComparison, Segment
 from .registry import LAYER_TYPES, VALIDATORS, get_layer_type
+from .services.compare import run_comparison, store_default_comparisons
 from .services.ingest import IngestError, create_layer_with_segments
 from .services.vocadito import _refuse_duplicate_track_numbers, _probe
 from .validators import run_for_corpus, run_for_item, run_for_layer
@@ -1012,6 +1018,28 @@ class ApiTests(Fixtures):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["note_pitch"]["match_strategy"], "onset")
 
+    # -- who is asking -----------------------------------------------------
+
+    def test_me_answers_a_visitor_with_no_session(self):
+        """A 200 with the fact in it: having no session is an answer, and not a refusal."""
+        r = self.client.get("/api/me/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIs(r.data["authenticated"], False)
+        self.assertIsNone(r.data["username"])
+
+    def test_me_names_the_signed_in_reader(self):
+        self.client.force_authenticate(self.user)
+        r = self.client.get("/api/me/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIs(r.data["authenticated"], True)
+        self.assertEqual(r.data["username"], "reviewer")
+
+    def test_me_grants_nothing(self):
+        """Asking who you are leaves every permission where it was."""
+        self.client.get("/api/me/")
+        r = self.client.post(f"/api/layers/{self.a1.id}/validate/", {}, format="json")
+        self.assertEqual(r.status_code, 403)
+
     def test_item_detail_lists_both_annotations(self):
         r = self.client.get(f"/api/items/{self.item.pk}/")
         self.assertEqual(r.status_code, 200)
@@ -1650,3 +1678,68 @@ class MatcherToleranceTests(TestCase):
         for defaults in (NOTE_PITCH_DEFAULTS, SED_DEFAULTS):
             pairs, _, _ = _match(self.ROWS, self.ROWS, dict(defaults))
             self.assertEqual(len(pairs), 1, defaults["match_strategy"])
+
+
+class DemoImportComparisonTests(TestCase):
+    """
+    The import leaves the demo corpus ready to read.
+
+    The landing page quotes three numbers from vocadito_21 and reads them from a stored
+    comparison, so the import has to store one, storing it twice has to be the same as
+    storing it once, and the numbers have to be these ones. The figures are checked here
+    because a page states them to a reader who cannot check them.
+    """
+
+    root = Path(settings.BASE_DIR) / "demo-data" / "vocadito"
+
+    def _import(self):
+        call_command(
+            "import_vocadito",
+            slug="vocadito-demo",
+            name="vocadito (demo subset)",
+            root=str(self.root),
+            stdout=io.StringIO(),
+        )
+        return Corpus.objects.get(slug="vocadito-demo")
+
+    def test_import_stores_one_default_comparison_per_item_and_stays_that_way(self):
+        corpus = self._import()
+        items = list(corpus.items.order_by("song_id"))
+        self.assertEqual(len(items), 5)
+        for item in items:
+            stored = LayerComparison.objects.filter(layer_a__item=item)
+            self.assertEqual(stored.count(), 1, f"{item.song_id} should hold one comparison")
+            self.assertEqual(stored.first().params, NOTE_PITCH_DEFAULTS)
+
+        # Importing again finds them and leaves them alone.
+        corpus = self._import()
+        self.assertEqual(LayerComparison.objects.count(), 5)
+        for item in corpus.items.all():
+            self.assertEqual(LayerComparison.objects.filter(layer_a__item=item).count(), 1)
+
+    def test_vocadito_21_compares_57_40_5(self):
+        corpus = self._import()
+        item = corpus.items.get(song_id="vocadito_21")
+        comparison = LayerComparison.objects.get(layer_a__item=item)
+        self.assertEqual(comparison.layer_a.stream_key, "A1")
+        self.assertEqual(comparison.layer_b.stream_key, "A2")
+        self.assertEqual(comparison.summary["matched"], 57)
+        self.assertEqual(comparison.summary["only_in_a"], 40)
+        self.assertEqual(comparison.summary["only_in_b"], 5)
+
+    def test_a_comparison_run_to_other_tolerances_is_left_in_place(self):
+        """The import adds its own and keeps someone else's: they answer different questions."""
+        corpus = self._import()
+        item = corpus.items.get(song_id="vocadito_21")
+        a = item.layers.get(stream_key="A1")
+        b = item.layers.get(stream_key="A2")
+        LayerComparison.objects.filter(layer_a=a).delete()
+        run_comparison(a, b, {"onset_tolerance_sec": 0.3})
+
+        report = store_default_comparisons(corpus)
+        self.assertEqual(report.created, 1)
+        self.assertEqual(LayerComparison.objects.filter(layer_a=a).count(), 2)
+        self.assertEqual(
+            LayerComparison.objects.filter(layer_a=a, params=NOTE_PITCH_DEFAULTS).count(), 1
+        )
+

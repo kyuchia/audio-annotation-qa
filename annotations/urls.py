@@ -17,6 +17,7 @@ router.register("adjudications", views.AdjudicationViewSet, basename="adjudicati
 
 urlpatterns = [
     path("", include(router.urls)),
+    path("me/", views.me, name="me"),
     path("layer-types/", views.layer_types, name="layer-types"),
     path("comparator-defaults/", views.comparator_defaults, name="comparator-defaults"),
 ]

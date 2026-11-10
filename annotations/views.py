@@ -12,7 +12,7 @@ from .comparators.pitch_interval import NOTE_PITCH_DEFAULTS, SED_DEFAULTS
 from .exporters import ExportError, item_to_session, layer_to_svl, suggested_filename, suggested_session_filename
 from .importers import parse_f0_csv
 from .importers.f0_csv import F0ParseError
-from .params import ParamError, comparator_params, validator_params
+from .params import ParamError, validator_params
 from .models import (
     Adjudication,
     AnnotationLayer,
@@ -25,7 +25,7 @@ from .models import (
     ValidationIssue,
     ValidationRun,
 )
-from .registry import comparator_for
+from .services.compare import ComparisonError, run_comparison
 from .serializers import (
     AdjudicationSerializer,
     CorpusSerializer,
@@ -392,45 +392,17 @@ class LayerComparisonViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        a = ser.validated_data["layer_a"]
-        b = ser.validated_data["layer_b"]
-        if a.layer_type != b.layer_type:
-            return Response(
-                {"detail": f"Cannot compare different annotation types: {a.layer_type} vs {b.layer_type}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        comparator = comparator_for(a.layer_type)
-        if comparator is None:
-            return Response(
-                {"detail": f"No comparator is registered for {a.layer_type}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         try:
-            supplied = comparator_params(ser.validated_data.get("params"), comparator)
-        except ParamError as exc:
-            return Response({"params": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
-        params = {**comparator.default_params, **supplied}
-        try:
-            result = comparator.fn(a, b, params)
-        except (ValueError, TypeError) as exc:
-            # The boundary above checks every knob the comparator declares, so reaching
-            # here means a comparator refused something that check does not cover yet.
-            # Still the client's input, so still a 400 — a 500 would blame the server for
-            # a value the caller chose.
-            return Response(
-                {"params": [f"This comparison cannot be run with those parameters: {exc}"]},
-                status=status.HTTP_400_BAD_REQUEST,
+            obj = run_comparison(
+                ser.validated_data["layer_a"],
+                ser.validated_data["layer_b"],
+                ser.validated_data.get("params"),
+                created_by=_user(request),
             )
-        obj = LayerComparison.objects.create(
-            layer_a=a,
-            layer_b=b,
-            comparator_key=comparator.key,
-            params=params,  # store the tolerances, or nobody can later tell what standard
-            # this difference was computed to
-            summary=result["summary"],
-            discrepancies=result["discrepancies"],
-            created_by=_user(request),
-        )
+        except ComparisonError as exc:
+            # Every refusal the service raises is about what the caller asked for, so it
+            # is a 400 — a 500 would blame the server for a value the caller chose.
+            return Response(exc.as_errors(), status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(obj).data, status=status.HTTP_201_CREATED)
 
 
@@ -452,6 +424,27 @@ def layer_types(request):
 @permission_classes([])
 def comparator_defaults(request):
     return Response({"note_pitch": NOTE_PITCH_DEFAULTS, "sound_event": SED_DEFAULTS})
+
+
+@api_view(["GET"])
+@permission_classes([])
+def me(request):
+    """
+    Who is asking, as the session sees them.
+
+    Open to everyone and answered for everyone: a visitor with no session is a fact about
+    this request, so it is a 200 with the fact in it. Refusing the question would leave the
+    frontend to discover the answer by attempting a write and reading the refusal, which is
+    how a reader ends up pressing a button that was never going to work.
+
+    This reports the session. It grants nothing: every endpoint keeps its own permission,
+    and a request that lies about this gets exactly as far as it did before.
+    """
+    user = getattr(request, "user", None)
+    signed_in = bool(user and user.is_authenticated)
+    return Response(
+        {"authenticated": signed_in, "username": user.get_username() if signed_in else None}
+    )
 
 
 def _user(request):

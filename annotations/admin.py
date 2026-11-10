@@ -454,6 +454,9 @@ def _severity_badge(errors: int, warnings: int):
     return mark_safe(" · ".join(parts))
 
 
-admin.site.site_header = "Audio annotation management platform"
-admin.site.site_title = "Annotation management"
+# The admin is a second door into the same product, so it carries the product's name.
+# index_title is the heading over the model list, where repeating the name would say
+# nothing: it names what the page is for instead.
+admin.site.site_header = "Annotation QA"
+admin.site.site_title = "Annotation QA"
 admin.site.index_title = "Data review"

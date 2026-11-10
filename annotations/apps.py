@@ -4,7 +4,7 @@ from django.apps import AppConfig
 class AnnotationsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "annotations"
-    verbose_name = "Audio annotation management"
+    verbose_name = "Annotation QA"
 
     def ready(self):
         # Importing is registering: layer types, validators and comparators all enter
