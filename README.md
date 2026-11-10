@@ -31,7 +31,7 @@ across the five excerpts, while the annotations also differ in note segmentation
 assignment for moving notes. Reporting pitch and timing separately helps distinguish these sources of
 disagreement.
 
-Full results and comparison semantics are in the [design notes](docs/DESIGN.md).
+Comparison methods and design decisions are documented in the [design notes](docs/DESIGN.md).
 
 ## Quickstart
 

@@ -1,4 +1,4 @@
-# Audio Annotation QA: design notes
+# Annotation QA: design notes
 
 **Web-based validation, comparison, and review tracking for research audio annotations.**
 
@@ -14,20 +14,15 @@ disagree, and what anyone has decided about them.
 ### The problem it addresses
 
 A folder of annotation CSVs is a reasonable way to produce annotations and a poor way to
-keep them. Specifically, a CSV on its own has:
+keep them. On its own, a CSV has:
 
-- **No validation.** Nothing notices that a file's annotation stops well before the
-  audio ends, that two segments overlap, that a sample rate was assumed rather than read,
-  or that an onset column has been read as an offset column. Each of these imports silently
-  and looks fine.
-- **No history.** When a file is corrected, the previous state is gone. "Somebody changed
-  it and nobody knows who" is the normal end state of a shared annotation folder.
-- **No record of review.** Decisions about annotation quality end up as extra columns in a
-  metadata spreadsheet — no author, no timestamp, no evidence — so a decision cannot be
-  re-examined later, because nothing says what it was based on.
-- **No way to express disagreement.** Two annotators working independently produce two
-  files. A filesystem can only place one of them "after" the other; it has no way to say
-  they are parallel and equally valid.
+- **No validation.** An annotation that stops before the audio ends, overlapping segments,
+  an assumed sample rate, or an onset column read as an offset column all import silently.
+- **No history.** When a file is corrected, the previous state is gone.
+- **No record of review.** Quality decisions end up as spreadsheet columns with no author,
+  timestamp, or evidence.
+- **No way to express disagreement.** A filesystem can place one annotator's file "after"
+  the other, but cannot say the two are parallel and equally valid.
 
 This project stores annotations as structured segments with their provenance, runs
 validators that report rather than silently fix, compares two annotations of the same audio
@@ -39,87 +34,44 @@ with the evidence behind them.
 ## Demo data
 
 The demo corpus is a five-excerpt subset of **vocadito**: short solo singing recordings,
-mono, 44.1 kHz, 9–39 seconds each. Every excerpt carries **two note annotations, A1 and A2,
-made independently by two annotators**. See
-[`demo-data/vocadito/ATTRIBUTION.md`](../demo-data/vocadito/ATTRIBUTION.md) for the dataset's
-authors, licence and citation.
+mono, 44.1 kHz. Every excerpt carries **two note annotations, A1 and A2, made independently
+by two annotators**. See [`demo-data/vocadito/ATTRIBUTION.md`](../demo-data/vocadito/ATTRIBUTION.md)
+for the dataset's authors, licence and citation.
 
-Two independent annotations of the same singing is exactly the case the comparison exists
-for. Neither is the correct one. Where they differ, the difference is a fact about the
-material — how a phrase divides into notes, where a slide becomes a new pitch — and the
-system's job is to show it precisely, not to adjudicate it.
-
-### What the comparison shows
-
-Five excerpts, chosen so that each shows a different *kind* of disagreement. Run with the
+The five excerpts were chosen so that each shows a different kind of disagreement under the
 default tolerances (onset matching, 0.1 s onset tolerance, 50 cents pitch tolerance):
 
-| Excerpt | A1 / A2 notes | Matched | Only A1 | Only A2 | Pitch | Timing | Both | What it shows |
-|---|---|---|---|---|---|---|---|---|
-| `vocadito_8`  | 40 / 37 | 37 | 3 | 0 | 1 | 1 | 1 | Near-total agreement — the baseline case |
-| `vocadito_16` | 47 / 36 | 36 | 11 | 0 | 0 | 0 | 9 | Pitch: every A2 note matched, yet 9 pairs disagree by 137–219 cents |
-| `vocadito_17` | 54 / 47 | 33 | 21 | 14 | 0 | 3 | 1 | Segmentation in both directions, with pitch largely agreed |
-| `vocadito_21` | 97 / 62 | 57 | 40 | 5 | 0 | 3 | 12 | A1 subdivides sustained notes A2 keeps whole |
-| `vocadito_34` | 89 / 95 | 75 | 14 | 20 | 5 | 8 | 8 | A2 is the finer-grained annotator here, plus the most pitch disagreement |
+- `vocadito_8` — near-total agreement; the baseline case.
+- `vocadito_16` — every A2 note is matched, yet nine pairs differ in both pitch and timing.
+- `vocadito_17` — segmentation differs in both directions, with pitch largely agreed.
+- `vocadito_21` — some A1 notes subdivide longer A2 notes.
+- `vocadito_34` — A2 is the finer-grained annotator, with the most pitch disagreement.
 
-The median absolute onset difference is 0.000 s in all five: the two annotators agree
-closely on *where* events begin, and disagree about how a phrase divides into notes and
-what pitch to assign a moving one. That is the useful signal, and it is only visible
-because pitch and timing are reported separately rather than collapsed into one agreement
-score.
+Among matched note pairs, the median absolute onset difference is 0.000 s in all five
+excerpts. Unmatched notes, however, reveal substantial differences in segmentation, and
+matched pairs still differ in the pitch assigned to moving notes. Both are visible only
+because pitch and timing are reported separately.
 
 ---
 
-## Quickstart
+## Running it
 
-Requires Docker. From the repository root:
+Setup is in the [README](../README.md). A few additions:
 
-```bash
-cp .env.example .env
-```
+- **API** — http://localhost:8000/api/. `GET /api/me/` reports whether the current session
+  is signed in.
+- **Permissions** — reads are open to everyone; any write (uploading an annotation, running
+  validators, creating a comparison, recording a review) requires a signed-in user. Signed-out
+  visitors see the UI without write controls.
+- **Re-running validators** from the command line:
 
-```bash
-docker compose up -d
-```
+  ```bash
+  docker compose exec django python manage.py run_validators --corpus vocadito-demo --show
+  ```
 
-```bash
-docker compose exec django python manage.py migrate
-```
-
-```bash
-docker compose exec django python manage.py createsuperuser
-```
-
-Import the demo corpus and validate it in one step:
-
-```bash
-docker compose exec django python manage.py import_vocadito --slug vocadito-demo --name "vocadito (demo subset)" --root /data/vocadito --validate
-```
-
-Then open:
-
-- **UI** — http://localhost:5173
-- **Admin** — http://localhost:8000/admin/
-- **API** — http://localhost:8000/api/
-
-Reads are open; any write (uploading an annotation, creating a comparison, recording a
-review) requires the superuser you just created.
-
-To run the validators again, or over one item:
-
-```bash
-docker compose exec django python manage.py run_validators --corpus vocadito-demo --show
-```
-
-To use the full dataset instead of the five-excerpt subset, download vocadito, point
-`DATASET_ROOT` in `.env` at its parent directory, and re-run `import_vocadito` against it.
-The subset has the same layout as the full release, so the same command imports either.
-
-Tests:
-
-```bash
-docker compose exec django python manage.py test annotations
-```
+- **Full dataset** — download vocadito, point `DATASET_ROOT` in `.env` at its parent
+  directory, and run `import_vocadito` against it. The subset has the same layout as the
+  full release.
 
 ---
 
@@ -176,6 +128,9 @@ each owning the question it can answer:
   nothing" are different results that an empty finding list cannot distinguish
 - the **caller** can override any threshold for a single run
 
+Comparison logic lives in one service (`annotations/services/compare.py`) shared by the API
+and the importer, so a comparison created by either path is the same computation.
+
 ---
 
 ## Validators
@@ -186,7 +141,7 @@ each owning the question it can answer:
 | `media_probed` | item | The audio header has not been read, so anything needing a sample rate will fail |
 | `metadata_duration_agreement` | item | The metadata's claimed duration disagrees with the header. The header always wins; this notices that the metadata has gone stale |
 | `recording_linked` | item | Whether an exported session points at the recording the annotations were made against or at a stand-in, plus duration, sample-rate and channel mismatches against the linked file |
-| `segments_monotonic` | layer | Segments whose offset precedes their onset, and overlapping pairs. An overlap above `segment_overlap_tolerance_sec` is a warning; one at or below it is reported as `info` with its magnitude, since a real conflict and a rounding artifact differ only in size. Tolerance defaults to `0` |
+| `segments_monotonic` | layer | Segments whose offset precedes their onset, and overlapping pairs. An overlap above `segment_overlap_tolerance_sec` is a warning; one at or below it is reported as `info` with its magnitude. Tolerance defaults to `0` |
 | `annotation_coverage` | layer | How much of the reference length is annotated, an unannotated stretch at the end, and annotation running past the audio |
 | `annotation_internal_gaps` | layer | Unannotated stretches mid-recording. Always `info`, and the item's notes travel with the finding: a silence in the material and a missed annotation are identical in the data |
 | `clip_single_segment` | layer | A clip-level annotation holding more than one segment |
@@ -195,18 +150,19 @@ Severities are `error`, `warning` and `info`. A finding is never deleted — it 
 *acknowledged*, with a note, so that "a human looked at this and judged it acceptable"
 stays on the record.
 
-Running the validators over the demo corpus produces 12 `info` findings and no warnings or
-errors. Eleven are routine summaries; the twelfth shows why magnitude belongs in a finding.
-`segments_monotonic` reported that two segments in `vocadito_21` stream `A1` overlap, by
-2.2676 × 10⁻⁵ s — 23 microseconds. The source states each note as `(onset, pitch_hz,
-duration)`, so a segment's offset is `onset + duration`, a sum of two independently rounded
-values; note 0's sum lands 23 µs past note 1's onset, and nothing is wrong with the
-annotation. A real conflict and a rounding artifact are the same shape in the data and only
-the magnitude separates them, which is why overlaps carry a tolerance:
-`segment_overlap_tolerance_sec`, set to 1 ms for `note_pitch`. Within it, a finding is
-reported as `segments_overlap_within_tolerance` at `info`; above it, as `segments_overlap`
-at `warning`. The tolerance grades a finding, never suppresses one, and its default is `0`
-so a layer type that has not reasoned about its own source format inherits no leniency.
+**Current findings.** Every validation run is kept. The UI and API list, for each item or
+layer, only the findings from the most recent run that *covered* it — whether or not that
+run reported anything — so a problem fixed in a later run stops being listed, and older runs
+remain available as history (`/api/validation-runs/<id>/issues/`). An item's status and the
+item list's "Errors and warnings" filter both count current errors and warnings only; `info`
+findings stay visible on the item page.
+
+**Why overlaps carry a tolerance.** In `vocadito_21`, two adjacent notes in stream `A1`
+overlap by about 23 µs: the source states each note as onset plus duration, and the two
+values are rounded independently. A real conflict and a rounding artifact differ only in
+magnitude, so `note_pitch` sets `segment_overlap_tolerance_sec` to 1 ms. The validator
+reports this overlap as an `info` finding with its size, instead of ignoring it or treating
+it as an error.
 
 ---
 
@@ -221,9 +177,9 @@ Matched pairs fall into categories that are kept apart rather than summed:
 
 | Category | Meaning |
 |---|---|
-| `pitch_only` | Same interval, pitches differ beyond the cents tolerance |
-| `timing_only` | Same pitch, intervals differ beyond the onset/overlap tolerance |
-| `pitch_and_timing` | Both differ |
+| `pitch_only` | Pitch difference exceeds its tolerance; timing does not |
+| `timing_only` | Timing difference exceeds its tolerance; pitch does not |
+| `pitch_and_timing` | Both differences exceed their tolerances |
 | `only_in_a` | Annotated by A, with no counterpart in B |
 | `only_in_b` | Annotated by B, with no counterpart in A |
 
@@ -244,12 +200,16 @@ measured against — and defaults move. The matching strategy is explicit in tho
 the comparator refuses to run without one rather than quietly picking a default that the
 stored record would then fail to mention.
 
+The importer stores one comparison per item at the default parameters (idempotently), and
+the item page shows the most recent stored comparison on load. Comparisons run at other
+tolerances are kept alongside it.
+
 ---
 
 ## Sonic Visualiser session export
 
-Two products, both export-only — Sonic Visualiser is a viewer here, never a source, so
-there is no parser and the direction of truth stays unambiguous.
+Both formats are export-only: the application generates `.svl` and `.sv` files for Sonic
+Visualiser but does not parse them. Annotations made in Sonic Visualiser come in as CSV.
 
 - **`.svl`** — a single layer, loaded via *File → Import Annotation Layer*.
 - **`.sv`** — a whole session: the audio plus every layer, opening on a double click.
@@ -266,9 +226,8 @@ Three details decide whether the result actually opens:
   entirely the wrong thing.
 
 The exported session states which audio it points at. If it names a stand-in rather than the
-recording the annotations were made against, the audio model's name says so, and the frame
-count describes whichever file the URI actually names. A reviewer who is not told this hears
-onsets that do not line up and reasonably concludes the annotation is wrong.
+recording the annotations were made against, the audio model's name says so, so a reviewer
+does not mistake a misaligned stand-in for a wrong annotation.
 
 ---
 
@@ -280,41 +239,25 @@ browser UI for annotators to work in. This project does not produce annotations 
 annotation interface. It takes annotation files produced elsewhere — in Tony, Sonic
 Visualiser, or a script — and provides what the production step leaves out: validation,
 comparison between independent annotations of the same audio, and review decisions kept
-with their evidence. The two kinds of tool sit at different stages, and a project that
-annotates in Label Studio could still use this one to check and compare the results.
+with their evidence. A project that annotates in Label Studio could still use this one to
+check and compare the results.
 
 ---
 
 ## Known limitations
 
-- **Adjudication is modelled but not implemented.** The `Adjudication` model exists —
-  several candidate layers, a chosen one, the reasoning — but there is no workflow, no API
-  flow and no UI for it, and nothing creates one.
-- **No role-based permissions.** Reads are open and *any* authenticated user can write:
-  upload annotations, record reviews, add corrections, acknowledge findings. There is no
-  distinction between an annotator, a reviewer and an administrator.
-- **`link_recordings` assumes one directory per item.** It looks for
-  `<root>/<last component of disk_path>/<filename>`, so it does not fit a corpus whose audio
-  sits in a single shared directory with items distinguished by filename. Such a corpus is
-  usually one whose own audio already *is* the recording, in which case there is nothing to
-  link — switch `recording_linked` off via `Corpus.skip_validators`. A flat recording tree
-  that genuinely needs linking is not supported; it wants a per-corpus rule for turning an
-  item into a candidate path.
-- **Frame-level f0 is not imported.** The demo dataset ships a dense pitch contour per
-  excerpt — one sample every 256/44100 s, 1,500–6,700 rows each — and it is deliberately
-  left on disk. It is a different kind of annotation from what `Segment` holds: those rows
-  are instants, not intervals, so stored as segments every one would be zero-length and
-  `annotation_coverage` would report 0% on a densely annotated file. "A note was sung here
-  at this pitch" and "the pitch estimate at this instant was this" are also different
-  claims — around 40% of the frames are marked unvoiced, and a contour crosses between notes
-  with no note boundary. Onset matching against a 5.8 ms grid would pair frames with
-  whichever neighbour happened to be nearest and swamp the comparison. Frame-level pitch
-  wants its own layer type, and choosing its representation is a modelling decision rather
-  than an import detail. The importer reports these files as present and unimported instead
-  of skipping them silently.
-- **Not deployed.** This runs under `docker compose` with Django's development server. There
-  is no production configuration: no WSGI/ASGI server wired up, no static-file serving, no
-  TLS, no backups.
+- **Adjudication is modelled but not implemented.** The `Adjudication` model exists, but
+  there is no workflow, API flow or UI for it.
+- **No role-based permissions.** Any signed-in user can upload annotations, record reviews,
+  add corrections and acknowledge findings; there is no distinction between annotator,
+  reviewer and administrator.
+- **`link_recordings` assumes one directory per item.** A corpus whose recordings share a
+  single directory is not supported.
+- **Frame-level f0 is not imported.** Unlike note annotations, these are instantaneous pitch
+  estimates rather than intervals, and they need a separate layer type and comparison
+  method. The importer reports these files as present and unimported.
+- **Not deployed.** This runs under `docker compose` with Django's development server; there
+  is no production server, static-file serving, TLS, or backup configuration.
 
 ---
 
@@ -324,15 +267,15 @@ Copy `.env.example` to `.env` and edit. Everything is read from the environment.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATASET_ROOT` | `./demo-data` | Host directory mounted read-only at `/data` in the container. A corpus's `root_path` is a path beneath it |
-| `RECORDING_ROOT` | `./recordings` | Host directory mounted read-only at `/recordings`. Only needed for a corpus whose annotations were made against audio not shipped beside them |
-| `DJANGO_SECRET_KEY` | a development placeholder | **Change this for any installation that is not a throwaway local one.** It signs sessions and password-reset tokens |
-| `DJANGO_DEBUG` | `0` | Off unless explicitly set to `1`. With it on, any error response carries a traceback, your settings and local variables — the default is what runs wherever nobody set the variable, which is exactly where that does the most damage. `docker-compose.yml` sets it to `1` for local development |
-| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated `Host` headers this installation answers to; anything else gets a 400. This is what stops an attacker-supplied `Host` being reflected into absolute URLs and cache keys, so `*` disables a real protection rather than relaxing a formality. A deployment reachable under any other name must list its own hostnames; a leading dot matches subdomains (`.example.org`) |
+| `DATASET_ROOT` | `./demo-data` | Host directory mounted read-only at `/data`. A corpus's `root_path` is a path beneath it |
+| `RECORDING_ROOT` | `./recordings` | Host directory mounted read-only at `/recordings`, for a corpus whose annotations were made against audio not shipped beside them |
+| `DJANGO_SECRET_KEY` | a development placeholder | **Change this for any non-local installation.** It signs sessions and password-reset tokens |
+| `DJANGO_DEBUG` | `0` | Off unless set to `1`; with it on, error responses expose tracebacks and settings. `docker-compose.yml` sets it to `1` for local development |
+| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated hostnames this installation answers to. Avoid `*` |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` / `_HOST` / `_PORT` | `annotations` / `annotations` / `annotations` / `db` / `5432` | Database connection |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Origins allowed to call the API with credentials. Also used for `CSRF_TRUSTED_ORIGINS` |
 | `LOG_LEVEL` | `INFO` | Root logger level |
-| `TZ` | `UTC` | Server time zone. Timestamps are stored in UTC regardless; this sets how they are rendered |
+| `TZ` | `UTC` | Server time zone. Timestamps are stored in UTC regardless |
 
 The dataset volume is mounted **read-only**: the importer reads audio headers and CSVs, and
 never writes back into the source tree.
