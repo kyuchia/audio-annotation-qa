@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.db.models import Count, Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -27,6 +27,7 @@ from .models import (
 )
 from .services.compare import ComparisonError, run_comparison
 from .serializers import (
+    item_issues,
     AdjudicationSerializer,
     CorpusSerializer,
     F0UploadSerializer,
@@ -112,7 +113,9 @@ class ItemViewSet(viewsets.ModelViewSet):
         if p.get("in_metadata") == "true":
             qs = qs.filter(metadata_row__isnull=False)
         if p.get("has_open_issues") == "true":
-            qs = qs.filter(issues__acknowledged=False).distinct()
+            # Exists over the current findings: a join would match an item on a finding
+            # that a later run has already superseded.
+            qs = qs.filter(Exists(item_issues(OuterRef("pk"))))
         if p.get("unprobed") == "true":
             qs = qs.filter(sample_rate__isnull=True)
         if q := p.get("q"):
@@ -133,9 +136,15 @@ class ItemViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], url_path="issues")
     def issues(self, request, pk=None):
-        qs = ValidationIssue.objects.filter(item=self.get_object())
+        """
+        What is wrong with this item now, which is the only question this endpoint is
+        asked. Older runs stay in the database and stay readable one run at a time, at
+        /api/validation-runs/<id>/issues/.
+        """
+        item = self.get_object()
+        qs = ValidationIssue.objects.filter(Q(item=item) | Q(layer__item=item)).current()
         if request.query_params.get("open") == "true":
-            qs = qs.filter(acknowledged=False)
+            qs = qs.unacknowledged()
         return Response(ValidationIssueSerializer(qs, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="upload-annotation")
@@ -369,7 +378,11 @@ class ValidationIssueViewSet(viewsets.ReadOnlyModelViewSet):
             if value := p.get(field):
                 qs = qs.filter(**{field: value})
         if p.get("open") == "true":
-            qs = qs.filter(acknowledged=False)
+            qs = qs.unacknowledged()
+        # Naming a run is asking for history, and history is exactly what the rows of a
+        # superseded run are. Every other question is about the data as it stands.
+        if not p.get("run"):
+            qs = qs.current()
         return qs
 
     @action(detail=True, methods=["post"])
@@ -388,6 +401,26 @@ class LayerComparisonViewSet(viewsets.ModelViewSet):
     serializer_class = LayerComparisonSerializer
     pagination_class = DefaultPagination
     permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get_queryset(self):
+        """
+        ?item= and ?layer= ask which comparisons were run on something, which is how a
+        page showing one item finds the comparison already stored for it. Either side of
+        the pair counts: A against B and B against A are the same question asked once.
+        """
+        qs = self.queryset
+        p = self.request.query_params
+        for field, sides in (
+            ("item", ("layer_a__item", "layer_b__item")),
+            ("layer", ("layer_a", "layer_b")),
+        ):
+            value = p.get(field)
+            if not value:
+                continue
+            if not str(value).isdigit():
+                return qs.none()
+            qs = qs.filter(Q(**{sides[0]: value}) | Q(**{sides[1]: value})).distinct()
+        return qs
 
     def create(self, request, *args, **kwargs):
         ser = self.get_serializer(data=request.data)

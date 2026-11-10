@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from django.db.models import Count, Max, Min, Q
+from django.db.models import Count, IntegerField, Max, Min, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from rest_framework import serializers
 
 from .models import (
@@ -108,7 +109,8 @@ class LayerSerializer(serializers.ModelSerializer):
 
     def get_open_issue_counts(self, obj):
         rows = (
-            obj.issues.filter(acknowledged=False)
+            obj.issues.unacknowledged()
+            .current()
             .values("severity")
             .annotate(n=Count("id"))
         )
@@ -133,6 +135,35 @@ class LayerSerializer(serializers.ModelSerializer):
         if errs:
             raise serializers.ValidationError({"params": errs})
         return attrs
+
+
+def item_issues(item_ref):
+    """Every unacknowledged finding about an item as it stands now: the item's own, and
+    those its validators attached to one of its layers."""
+    return (
+        ValidationIssue.objects.filter(Q(item=item_ref) | Q(layer__item=item_ref))
+        .unacknowledged()
+        .current()
+    )
+
+
+def open_issue_count(severity):
+    """
+    One severity's count for the row being serialized.
+
+    A Count() over the joined issues would count every run's copy of the same finding, so
+    the count is taken from the current-findings queryset instead, grouped by the one
+    severity it was filtered to.
+    """
+    rows = (
+        item_issues(OuterRef("pk"))
+        .filter(severity=severity)
+        .order_by()
+        .values("severity")
+        .annotate(n=Count("id"))
+        .values("n")
+    )
+    return Coalesce(Subquery(rows[:1], output_field=IntegerField()), 0)
 
 
 class ItemSerializer(serializers.ModelSerializer):
@@ -172,14 +203,8 @@ class ItemSerializer(serializers.ModelSerializer):
     def annotate(qs):
         return qs.annotate(
             layer_count=Count("layers", distinct=True),
-            open_error_count=Count(
-                "issues", filter=Q(issues__severity="error", issues__acknowledged=False),
-                distinct=True,
-            ),
-            open_warning_count=Count(
-                "issues", filter=Q(issues__severity="warning", issues__acknowledged=False),
-                distinct=True,
-            ),
+            open_error_count=open_issue_count("error"),
+            open_warning_count=open_issue_count("warning"),
         )
 
 

@@ -189,7 +189,12 @@ function channelName(channels) {
       :reference-source="coverage.source"
     />
 
-    <ComparePanel v-if="item.layers.length > 1" class="section" :layers="item.layers" />
+    <ComparePanel
+      v-if="item.layers.length > 1"
+      class="section"
+      :layers="item.layers"
+      :item-id="item.id"
+    />
 
     <div class="section">
       <h2>Annotation layers</h2>

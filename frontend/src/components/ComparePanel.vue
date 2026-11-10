@@ -1,9 +1,12 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { session } from '../session'
 
-const props = defineProps({ layers: { type: Array, default: () => [] } })
+const props = defineProps({
+  layers: { type: Array, default: () => [] },
+  itemId: { type: Number, required: true },
+})
 
 const a = ref(null)
 const b = ref(null)
@@ -15,6 +18,8 @@ const strategy = ref('onset')
 const busy = ref(false)
 const error = ref('')
 const result = ref(null)
+// When the result on screen came from the database rather than from this visit.
+const storedAt = ref(null)
 
 const comparable = computed(() => props.layers.filter((l) => l.segment_count > 0))
 
@@ -27,10 +32,38 @@ watch(
   { immediate: true },
 )
 
+/*
+  The import stores a comparison for every item, so the page can open on an answer instead
+  of an empty form. The form stays, set to the pair and the tolerances that produced what
+  is on screen, so pressing Compare re-runs the same question or a different one.
+*/
+async function loadStored() {
+  try {
+    const page = await api.comparisons({ item: props.itemId, page_size: 1 })
+    const rows = page.results ?? page
+    if (!rows.length) return
+    const stored = rows[0]
+    result.value = stored
+    storedAt.value = stored.created_at
+    if (comparable.value.some((l) => l.id === stored.layer_a)) a.value = stored.layer_a
+    if (comparable.value.some((l) => l.id === stored.layer_b)) b.value = stored.layer_b
+    const p = stored.params || {}
+    if (p.onset_tolerance_sec != null) onsetTol.value = p.onset_tolerance_sec
+    if (p.pitch_tolerance_cents != null) centsTol.value = p.pitch_tolerance_cents
+    if (p.match_strategy) strategy.value = p.match_strategy
+  } catch {
+    // A stored comparison is a convenience. Failing to find one leaves the form, which is
+    // the whole panel for anyone who wants a different answer anyway.
+  }
+}
+
+onMounted(loadStored)
+
 async function run() {
   busy.value = true
   error.value = ''
   result.value = null
+  storedAt.value = null
   try {
     result.value = await api.compare({
       layer_a: a.value,
@@ -65,6 +98,25 @@ const rows = computed(() => (result.value?.discrepancies || []).slice(0, 300))
 function label(l) {
   return `${l.stream_key || l.layer_type} v${l.version}`
 }
+
+/* Which two annotations the result on screen is about, in the same words as the form. */
+const shownPair = computed(() => {
+  const r = result.value
+  if (!r) return ''
+  const la = props.layers.find((l) => l.id === r.layer_a)
+  const lb = props.layers.find((l) => l.id === r.layer_b)
+  return la && lb ? `${label(la)} against ${label(lb)}` : ''
+})
+
+const storedDate = computed(() =>
+  storedAt.value
+    ? new Date(storedAt.value).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      })
+    : '',
+)
 </script>
 
 <template>
@@ -115,6 +167,10 @@ function label(l) {
     <div v-if="error" class="error-box">{{ error }}</div>
 
     <template v-if="result">
+      <p v-if="storedAt" class="stored">
+        Stored comparison: {{ shownPair }}, run on {{ storedDate }}.
+      </p>
+      <p v-else-if="shownPair" class="stored">{{ shownPair }}.</p>
       <div class="stats">
         <div class="stat">
           <div class="stat-index">01</div>
@@ -238,6 +294,7 @@ function label(l) {
   margin-top: var(--s1);
 }
 .quiet { margin-bottom: var(--s5); }
+.stored { font-size: var(--fs-small); color: var(--text-muted); margin: 0 0 var(--s4); }
 .refs { font-size: var(--fs-micro); margin: 0 0 var(--s4); }
 .tally { margin: var(--s2) 0 0; font-size: var(--fs-micro); }
 @media (max-width: 900px) {

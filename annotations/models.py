@@ -32,6 +32,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
+from django.db.models import OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .registry import get_layer_type
@@ -733,6 +735,49 @@ class ValidationRun(TimeStamped):
         return f"Validation run #{self.pk} · {target}"
 
 
+class ValidationIssueQuerySet(models.QuerySet):
+    """
+    Findings accumulate. Every run writes its own rows, so after six runs of the same
+    validators an item holds six copies of the same three findings — and a reader asking
+    what is wrong with this item now wants the latest answer, while an auditor asking what
+    a given run reported wants that run's rows. Both questions stay answerable: the rows
+    are never deleted, and `current()` is the first question.
+    """
+
+    def current(self):
+        """
+        Only the findings from the most recent run that covered each finding's target.
+
+        Coverage, rather than authorship: a target whose latest covering run reported
+        nothing drops out of the result entirely, which is the point — a finding that has
+        since been fixed stops being listed instead of standing forever as the newest
+        thing anyone said about that layer.
+        """
+        # A finding carries only the ids its validator set: layer checks name a layer,
+        # item checks an item and its corpus. The item and corpus a layer finding belongs
+        # to are resolved through the layer, so every finding can be matched against runs
+        # of all three scopes.
+        scoped = self.annotate(
+            _item=Coalesce("layer__item_id", "item_id"),
+            _corpus=Coalesce("layer__item__corpus_id", "item__corpus_id", "corpus_id"),
+        )
+        # A layer run covers its own layer; an item run covers every layer of its item; a
+        # corpus run covers every layer in the corpus.
+        latest = (
+            ValidationRun.objects.filter(
+                Q(scope=ValidationRun.Scope.LAYER, layer_id=OuterRef("layer_id"))
+                | Q(scope=ValidationRun.Scope.ITEM, item_id=OuterRef("_item"))
+                | Q(scope=ValidationRun.Scope.CORPUS, corpus_id=OuterRef("_corpus"))
+            )
+            .order_by("-created_at", "-id")
+            .values("id")[:1]
+        )
+        return scoped.filter(run_id=Subquery(latest))
+
+    def unacknowledged(self):
+        return self.filter(acknowledged=False)
+
+
 class ValidationIssue(models.Model):
     class Severity(models.TextChoices):
         ERROR = "error", "Error"
@@ -760,6 +805,8 @@ class ValidationIssue(models.Model):
     )
     acknowledged_note = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ValidationIssueQuerySet.as_manager()
 
     class Meta:
         ordering = ["severity", "code", "id"]

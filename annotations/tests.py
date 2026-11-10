@@ -665,6 +665,167 @@ class ValidatorRunTests(Fixtures):
         self.assertNotIn("segments_overlap_within_tolerance", codes)
 
 
+class RepeatedRunTests(Fixtures):
+    """
+    Findings accumulate in the database and the pages that read them show the latest
+    answer. Every assertion here goes through the API, because the four places that read
+    findings — the item page's list, the item list's counts, the "Open issues" filter and
+    a layer's own tally — each had their own query and each had to be taught the rule.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.a1 = self.make_layer(self.scale_rows(n=4), stream="A1")
+        self.a2 = self.make_layer(self.scale_rows(n=4, hz=C4), stream="A2")
+        self.client = APIClient()
+
+    def open_issues(self, item=None):
+        item = item or self.item
+        r = self.client.get(f"/api/items/{item.pk}/issues/?open=true")
+        self.assertEqual(r.status_code, 200)
+        return r.data
+
+    def test_a_second_run_of_the_same_validators_leaves_the_list_the_same_length(self):
+        run_for_item(self.item)
+        after_one = self.open_issues()
+        self.assertTrue(after_one, "the fixture should produce findings to count")
+
+        second = run_for_item(self.item)
+        after_two = self.open_issues()
+
+        self.assertEqual(len(after_two), len(after_one))
+        self.assertEqual({i["code"] for i in after_two}, {i["code"] for i in after_one})
+        self.assertEqual({i["run"] for i in after_two}, {second.pk})
+
+    def test_a_second_run_leaves_the_item_lists_counts_the_same(self):
+        unprobed = self.make_item("item_unprobed", sample_rate=None)
+        run_for_corpus(self.corpus)
+        first = self.counts_for(unprobed)
+        self.assertGreater(first["open_error_count"], 0, "an unread header is an error")
+
+        run_for_corpus(self.corpus)
+
+        self.assertEqual(self.counts_for(unprobed), first)
+
+    def counts_for(self, item):
+        r = self.client.get(f"/api/items/?q={item.song_id}")
+        row = r.data["results"][0]
+        return {k: row[k] for k in ("open_error_count", "open_warning_count")}
+
+    def test_a_second_run_leaves_each_layers_own_tally_the_same(self):
+        run_for_item(self.item)
+        first = [l["open_issue_counts"] for l in self.detail_layers()]
+
+        run_for_item(self.item)
+
+        self.assertEqual([l["open_issue_counts"] for l in self.detail_layers()], first)
+
+    def detail_layers(self):
+        r = self.client.get(f"/api/items/{self.item.pk}/")
+        return sorted(r.data["layers"], key=lambda l: l["id"])
+
+    def test_the_open_issues_filter_names_an_item_once_after_two_runs(self):
+        run_for_item(self.item)
+        run_for_item(self.item)
+
+        r = self.client.get("/api/items/?has_open_issues=true")
+
+        self.assertEqual([i["song_id"] for i in r.data["results"]], [self.item.song_id])
+
+    def test_a_layer_run_supersedes_that_layer_alone(self):
+        item_run = run_for_item(self.item)
+        layer_run = run_for_layer(self.a1)
+
+        by_layer = {}
+        for issue in self.open_issues():
+            by_layer.setdefault(issue["layer"], set()).add(issue["run"])
+
+        self.assertEqual(by_layer[self.a1.pk], {layer_run.pk})
+        self.assertEqual(by_layer[self.a2.pk], {item_run.pk})
+
+    def test_a_finding_that_has_been_fixed_stops_being_listed(self):
+        """
+        The rule is the latest run that covered the layer, which is what lets a finding
+        disappear. Taking the latest run that mentioned the layer would leave this one
+        standing after the data was corrected.
+        """
+        overlapping = self.make_layer(self.rows([(1.0, 1.0, A4), (1.5, 1.0, C4)]), stream="B1")
+        run_for_layer(overlapping)
+        self.assertIn("segments_overlap", {i["code"] for i in self.open_issues()})
+
+        Segment.objects.filter(layer=overlapping, index=1).update(start_sec=2.0, end_sec=3.0)
+        run_for_layer(overlapping)
+
+        codes = {i["code"] for i in self.open_issues() if i["layer"] == overlapping.pk}
+        self.assertNotIn("segments_overlap", codes)
+
+    def test_a_superseded_run_stays_readable_by_run(self):
+        """History is the reason the rows are kept, so asking for a run by id still
+        answers with everything that run reported."""
+        first = run_for_item(self.item)
+        run_for_item(self.item)
+
+        r = self.client.get(f"/api/validation-issues/?run={first.pk}")
+
+        self.assertEqual(r.data["count"], first.issues.count())
+        self.assertEqual({i["run"] for i in r.data["results"]}, {first.pk})
+
+
+class StoredComparisonApiTests(Fixtures):
+    """The item page opens on the comparison already in the database, which it finds by
+    asking for the ones run on this item."""
+
+    def setUp(self):
+        super().setUp()
+        self.a1 = self.make_layer(self.scale_rows(n=4), stream="A1")
+        self.a2 = self.make_layer(self.scale_rows(n=4, hz=C4), stream="A2")
+        self.client = APIClient()
+
+    def test_a_stored_comparison_is_found_by_item(self):
+        run_comparison(self.a1, self.a2)
+
+        r = self.client.get(f"/api/comparisons/?item={self.item.pk}")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["count"], 1)
+        self.assertIn("matched", r.data["results"][0]["summary"])
+
+    def test_the_newest_comparison_comes_first(self):
+        older = run_comparison(self.a1, self.a2)
+        newer = run_comparison(self.a1, self.a2, {"onset_tolerance_sec": 0.2})
+
+        r = self.client.get(f"/api/comparisons/?item={self.item.pk}")
+
+        self.assertEqual([c["id"] for c in r.data["results"]], [newer.pk, older.pk])
+
+    def test_a_comparison_on_another_item_is_left_out(self):
+        other = self.make_item("item_two")
+        b1 = self.make_layer(self.scale_rows(n=4), stream="A1", item=other)
+        b2 = self.make_layer(self.scale_rows(n=4, hz=C4), stream="A2", item=other)
+        run_comparison(b1, b2)
+        mine = run_comparison(self.a1, self.a2)
+
+        r = self.client.get(f"/api/comparisons/?item={self.item.pk}")
+
+        self.assertEqual([c["id"] for c in r.data["results"]], [mine.pk])
+
+    def test_a_comparison_list_needs_no_authentication(self):
+        run_comparison(self.a1, self.a2)
+
+        r = APIClient().get(f"/api/comparisons/?item={self.item.pk}")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["count"], 1)
+
+    def test_an_item_that_is_no_id_at_all_matches_nothing(self):
+        run_comparison(self.a1, self.a2)
+
+        r = self.client.get("/api/comparisons/?item=all")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["count"], 0)
+
+
 class OverlapToleranceTests(Fixtures):
     """
     Both sides of segment_overlap_tolerance_sec.
