@@ -1,4 +1,4 @@
-# Audio Annotation QA
+# Annotation QA
 
 **A web app for validating, comparing, and reviewing research audio annotations.**
 
@@ -26,9 +26,9 @@ singing dataset, each annotated independently by two annotators.
 
 In `vocadito_21`, A1 marked 97 notes and A2 marked 62, with 57 matched pairs. Of A1's 40
 unmatched notes, 18 begin inside an A2 note, consistent with A1 splitting notes that A2
-keeps whole. Across all five excerpts, matched notes have a median onset difference of
-0.000 s, while the annotations differ in note segmentation and pitch assignment for moving
-notes. Reporting pitch and timing separately helps distinguish these sources of
+keeps whole. Among matched note pairs, the median absolute onset difference is 0.000 s
+across the five excerpts, while the annotations also differ in note segmentation and pitch
+assignment for moving notes. Reporting pitch and timing separately helps distinguish these sources of
 disagreement.
 
 Full results and comparison semantics are in the [design notes](docs/DESIGN.md).
@@ -46,17 +46,25 @@ docker compose exec django python manage.py import_vocadito \
   --slug vocadito-demo --name "vocadito (demo subset)" --root /data/vocadito --validate
 ```
 
-Open http://localhost:5173. Run the tests with:
+Open http://localhost:5173. Signed-out visitors get a read-only view; sign in at
+http://localhost:8000/admin/ with the superuser account to run validators, compare
+layers, and record reviews.
+
+Run the tests with:
 
 ```bash
 docker compose exec django python manage.py test annotations
 ```
 
+The test suite uses synthetic fixtures, plus integration tests against the included demo
+corpus.
+
 ## Status
 
-Runs locally under Docker Compose; not yet deployed, and there are no role-based
-permissions yet. See [docs/DESIGN.md](docs/DESIGN.md) for architecture, validation rules,
-comparison methods, configuration, and known limitations.
+Runs locally under Docker Compose; not yet deployed. Any signed-in user can edit and
+review, and there are no role-based permissions yet. See [docs/DESIGN.md](docs/DESIGN.md)
+for architecture, validation rules, comparison methods, configuration, and known
+limitations.
 
 ## License
 
