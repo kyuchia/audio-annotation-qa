@@ -137,14 +137,23 @@ class LayerSerializer(serializers.ModelSerializer):
         return attrs
 
 
-def item_issues(item_ref):
+# What the item list treats as something to look at. An info finding states a fact about
+# the data — how much of a recording an annotation covers, how many items carry a metadata
+# row — and an item carrying only those has nothing outstanding. The status column has
+# always counted these two severities; anything else selecting items has to agree with it,
+# or the same page says both "clean" and "open issues" about the same row.
+NEEDS_ATTENTION = ("error", "warning")
+
+
+def item_issues(item_ref, severities=None):
     """Every unacknowledged finding about an item as it stands now: the item's own, and
     those its validators attached to one of its layers."""
-    return (
+    qs = (
         ValidationIssue.objects.filter(Q(item=item_ref) | Q(layer__item=item_ref))
         .unacknowledged()
         .current()
     )
+    return qs.filter(severity__in=severities) if severities else qs
 
 
 def open_issue_count(severity):
@@ -156,8 +165,7 @@ def open_issue_count(severity):
     severity it was filtered to.
     """
     rows = (
-        item_issues(OuterRef("pk"))
-        .filter(severity=severity)
+        item_issues(OuterRef("pk"), (severity,))
         .order_by()
         .values("severity")
         .annotate(n=Count("id"))

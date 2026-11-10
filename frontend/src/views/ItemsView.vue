@@ -68,6 +68,10 @@ watch(q, () => {
 
 const current = computed(() => corpora.value.find((c) => c.slug === corpus.value))
 
+/* An empty list means two different things, and telling a reader to import data they have
+   already imported is the wrong one. */
+const narrowed = computed(() => filter.value !== 'all' || Boolean(q.value))
+
 /*
   What a rescan did, read off its counts. The report also carries totals a reader has no
   decision to make about — segments written, metadata rows seen — so the sentence names
@@ -217,7 +221,7 @@ const totals = computed(() => ({
         <div class="row">
           <button :class="{ selected: filter === 'all' }" @click="filter = 'all'">All</button>
           <button :class="{ selected: filter === 'issues' }" @click="filter = 'issues'">
-            Open issues
+            Errors and warnings
           </button>
           <button :class="{ selected: filter === 'no-metadata' }" @click="filter = 'no-metadata'">
             On disk only
@@ -231,6 +235,9 @@ const totals = computed(() => ({
 
     <div class="panel">
       <p v-if="loading" class="muted">Loading…</p>
+      <p v-else-if="!items.length && narrowed" class="muted">
+        No items match this filter.
+      </p>
       <p v-else-if="!items.length" class="muted">
         No items match. Pick a corpus and press “Rescan dataset” to bring the data in.
       </p>

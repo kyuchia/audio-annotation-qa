@@ -725,6 +725,8 @@ class RepeatedRunTests(Fixtures):
         return sorted(r.data["layers"], key=lambda l: l["id"])
 
     def test_the_open_issues_filter_names_an_item_once_after_two_runs(self):
+        self.item.metadata_row = {"duration_sec": DURATION_SEC + 5.0}
+        self.item.save(update_fields=["metadata_row"])
         run_for_item(self.item)
         run_for_item(self.item)
 
@@ -769,6 +771,82 @@ class RepeatedRunTests(Fixtures):
 
         self.assertEqual(r.data["count"], first.issues.count())
         self.assertEqual({i["run"] for i in r.data["results"]}, {first.pk})
+
+
+class OpenIssueFilterTests(Fixtures):
+    """
+    "Open issues" and the status column answer one question between them, so they select
+    the same items. An info finding reports a measurement rather than a fault, and an item
+    carrying only those reads clean in both places.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # An annotation that covers the recording. A tail gap past note_pitch's threshold
+        # is a warning, and this class is about what an item with no warnings looks like.
+        self.make_layer(self.scale_rows(n=19, start=0.5, step=1.0, dur=0.9), stream="A1")
+        self.client = APIClient()
+
+    def listed(self):
+        """The song ids the "Open issues" chip would show."""
+        r = self.client.get("/api/items/?has_open_issues=true")
+        self.assertEqual(r.status_code, 200)
+        return [i["song_id"] for i in r.data["results"]]
+
+    def status_of(self, item):
+        """The two counts the status column draws its pills from."""
+        row = self.client.get(f"/api/items/?q={item.song_id}").data["results"][0]
+        return row["open_error_count"], row["open_warning_count"]
+
+    def claim_duration(self, item, seconds):
+        item.metadata_row = {"duration_sec": seconds}
+        item.save(update_fields=["metadata_row"])
+
+    def severities(self, item):
+        r = self.client.get(f"/api/items/{item.pk}/issues/?open=true")
+        return {i["severity"] for i in r.data}
+
+    def test_an_item_with_only_info_findings_reads_clean_and_is_left_out(self):
+        run_for_item(self.item)
+
+        self.assertEqual(self.severities(self.item), {"info"})
+        self.assertEqual(self.status_of(self.item), (0, 0))
+        self.assertEqual(self.listed(), [])
+
+    def test_the_info_findings_stay_on_the_item_page(self):
+        """The filter decides which items to show, and changes nothing about what an item
+        reports once it is open."""
+        run_for_item(self.item)
+
+        r = self.client.get(f"/api/items/{self.item.pk}/issues/?open=true")
+
+        self.assertEqual({i["severity"] for i in r.data}, {"info"})
+        self.assertIn("coverage_summary", {i["code"] for i in r.data})
+
+    def test_an_item_with_a_current_warning_is_listed(self):
+        self.claim_duration(self.item, DURATION_SEC + 5.0)
+        run_for_item(self.item)
+
+        self.assertEqual(self.status_of(self.item), (0, 1))
+        self.assertEqual(self.listed(), [self.item.song_id])
+
+    def test_an_item_whose_warning_was_fixed_in_a_later_run_is_left_out(self):
+        self.claim_duration(self.item, DURATION_SEC + 5.0)
+        run_for_item(self.item)
+        self.assertEqual(self.listed(), [self.item.song_id])
+
+        self.claim_duration(self.item, DURATION_SEC)
+        run_for_item(self.item)
+
+        self.assertEqual(self.status_of(self.item), (0, 0))
+        self.assertEqual(self.listed(), [])
+
+    def test_an_error_lists_the_item(self):
+        unprobed = self.make_item("item_unprobed", sample_rate=None)
+        run_for_item(unprobed)
+
+        self.assertEqual(self.status_of(unprobed), (1, 0))
+        self.assertEqual(self.listed(), [unprobed.song_id])
 
 
 class StoredComparisonApiTests(Fixtures):

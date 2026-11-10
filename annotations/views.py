@@ -27,6 +27,7 @@ from .models import (
 )
 from .services.compare import ComparisonError, run_comparison
 from .serializers import (
+    NEEDS_ATTENTION,
     item_issues,
     AdjudicationSerializer,
     CorpusSerializer,
@@ -114,8 +115,9 @@ class ItemViewSet(viewsets.ModelViewSet):
             qs = qs.filter(metadata_row__isnull=False)
         if p.get("has_open_issues") == "true":
             # Exists over the current findings: a join would match an item on a finding
-            # that a later run has already superseded.
-            qs = qs.filter(Exists(item_issues(OuterRef("pk"))))
+            # that a later run has already superseded. The severities are the status
+            # column's, so the filter selects exactly the rows that column marks.
+            qs = qs.filter(Exists(item_issues(OuterRef("pk"), NEEDS_ATTENTION)))
         if p.get("unprobed") == "true":
             qs = qs.filter(sample_rate__isnull=True)
         if q := p.get("q"):
