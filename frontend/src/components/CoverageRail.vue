@@ -1,167 +1,207 @@
 <script>
 /*
-  Module scope on purpose. The body of <script setup> is the setup function and runs
-  once per component instance, so a counter declared there would reset to zero for
-  every rail and hand them all the same id — the exact collision this is here to avoid.
+  Stream colours live in module scope so that the timeline and the layer list below it draw
+  the same colour for the same stream key. The colour is hashed from the key itself: keyed
+  on a fixed list of names instead, every corpus outside that list would draw all of its
+  streams in one colour — which is exactly when telling two of them apart matters.
 */
-let railSeq = 0
+const STREAM_COLOURS = ['var(--stream-1)', 'var(--stream-2)', 'var(--stream-3)', 'var(--stream-4)']
 
-export function nextGapPatternId() {
-  railSeq += 1
-  return `coverage-gap-${railSeq}`
+export function streamColour(key) {
+  const k = (key || '').toLowerCase()
+  if (!k) return 'var(--accent)'
+  let h = 0
+  for (let i = 0; i < k.length; i += 1) h = (h * 31 + k.charCodeAt(i)) % 9973
+  return STREAM_COLOURS[h % STREAM_COLOURS.length]
 }
 </script>
 
 <script setup>
 /*
-  Coverage rail. The full width of the rail is the reference duration for coverage,
-  and the bars drawn on it are this layer's segments.
+  The annotation timeline: every stream of one item stacked in a single card on one shared
+  time axis, so two annotations of the same audio are compared by looking down a column.
 
-  Two things are drawn loudly on purpose, matching what the annotation_coverage
-  validator reports:
-    · a stretch at the end with no annotation      → hatched area
-    · annotation running past the reference length → the right end turns red
+  What it draws, matching what the annotation_coverage validator reports:
+    · each stream's segments, as bars on that stream's own track
+    · a stretch at the end that no stream annotated, as a lighter band across every track
+    · annotation running past the reference length, as a red stretch on that track
 
-  The reference duration is supplied by the parent rather than taken from the audio
-  header: when the file on disk is a stand-in, the header measures the stand-in and
-  not the recording the annotations were made against. See Item.coverage_duration()
-  on the backend, which this mirrors.
+  The parent supplies the reference duration, which mirrors Item.coverage_duration() on the
+  backend: where the file on disk stands in for the recording the annotations were made
+  against, that recording's length is the one coverage means.
 
-  Nothing here judges an individual segment. A rail that outlines one bar as suspect is
-  making a claim the viewer cannot check, and it would fall out of step with the
-  validators the moment their set changes — so anomaly reporting stays on the backend,
-  where a finding carries a code, a threshold and a reason.
+  Judging an individual segment stays on the backend, where a finding carries a code, a
+  threshold and a reason that a reader can check.
 */
 import { computed } from 'vue'
 
 const props = defineProps({
-  segments: { type: Array, default: () => [] }, // [{start_sec, end_sec, payload}]
+  // [{ key, label, unit, segments: [{ start_sec, end_sec, payload }] }]
+  streams: { type: Array, default: () => [] },
   durationSec: { type: Number, default: 0 },
   referenceSource: { type: String, default: '' },
-  streamKey: { type: String, default: '' },
-  height: { type: Number, default: 26 },
+  trackHeight: { type: Number, default: 26 },
+  // An optional heading inside the card: what the timeline is of, and the audio it is
+  // measured against.
+  title: { type: String, default: '' },
+  spec: { type: String, default: '' },
+  // 'coverage' reports how much of the reference each stream covers and what is missing;
+  // 'counts' names the streams and how many segments each holds.
+  legend: { type: String, default: 'coverage' },
 })
 
 const W = 1000
 
-/*
-  Every rail defines its own hatch pattern, and an SVG pattern can only be referenced
-  by id. A literal id would mean several elements sharing one id as soon as a page
-  shows more than one rail, so each instance gets its own.
-*/
-const gapId = nextGapPatternId()
-
-/*
-  A stable colour per stream key, derived from the key itself. Keyed on a fixed list of
-  names instead, every corpus outside that list draws all of its streams in one colour —
-  which is exactly when telling two of them apart matters. Hashing the key means A1 and A2
-  differ, and the same key keeps the same colour across every rail on the page.
-*/
-const STREAM_COLOURS = ['var(--stream-1)', 'var(--stream-2)', 'var(--stream-3)', 'var(--stream-4)']
-
-const colour = computed(() => {
-  const key = (props.streamKey || '').toLowerCase()
-  if (!key) return 'var(--accent)'
-  let h = 0
-  for (let i = 0; i < key.length; i += 1) h = (h * 31 + key.charCodeAt(i)) % 9973
-  return STREAM_COLOURS[h % STREAM_COLOURS.length]
+const lastEnd = computed(() => {
+  let end = 0
+  for (const s of props.streams) {
+    for (const seg of s.segments || []) end = Math.max(end, seg.end_sec)
+  }
+  return end
 })
 
-const durations = computed(() => props.segments.map((s) => s.end_sec - s.start_sec))
+/* The axis covers the reference length, and any annotation that runs past it. */
+const span = computed(() => Math.max(props.durationSec, lastEnd.value, 1))
+const scale = computed(() => W / span.value)
 
-const lastEnd = computed(() =>
-  props.segments.length ? Math.max(...props.segments.map((s) => s.end_sec)) : 0,
-)
+/*
+  Ticks every five seconds for an excerpt. A longer recording takes a coarser step, so the
+  axis carries half a dozen labels whatever its length.
+*/
+const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
+const tickStep = computed(() => STEPS.find((s) => span.value / s <= 6) ?? 900)
+const ticks = computed(() => {
+  const out = []
+  for (let t = 0; t <= span.value + 0.001; t += tickStep.value) out.push(Math.round(t))
+  return out
+})
 
-const tailGap = computed(() => Math.max(0, props.durationSec - lastEnd.value))
-const overshoot = computed(() => Math.max(0, lastEnd.value - props.durationSec))
+function pct(sec) {
+  return `${(sec / span.value) * 100}%`
+}
 
-const scale = computed(() => W / Math.max(props.durationSec, lastEnd.value, 1))
+const tail = computed(() => Math.max(0, props.durationSec - lastEnd.value))
 
-const bars = computed(() =>
-  props.segments.map((s, i) => {
-    const dur = s.end_sec - s.start_sec
+const tracks = computed(() =>
+  props.streams.map((s) => {
+    const segments = s.segments || []
+    const covered = segments.reduce((a, g) => a + (g.end_sec - g.start_sec), 0)
+    const end = segments.reduce((a, g) => Math.max(a, g.end_sec), 0)
     return {
-      x: s.start_sec * scale.value,
-      w: Math.max(0.8, dur * scale.value),
-      title: `#${s.index ?? i} ${s.start_sec.toFixed(2)}–${s.end_sec.toFixed(2)}s` +
-        (s.payload?.hz ? ` · ${s.payload.hz.toFixed(1)} Hz` : ''),
+      key: s.key,
+      label: s.label || s.key,
+      unit: s.unit || 'segments',
+      colour: streamColour(s.key),
+      count: segments.length,
+      coverPct: props.durationSec ? Math.round((covered / props.durationSec) * 100) : 0,
+      overshoot: Math.max(0, end - props.durationSec),
+      bars: segments.map((g, i) => ({
+        x: g.start_sec * scale.value,
+        w: Math.max(0.8, (g.end_sec - g.start_sec) * scale.value),
+        title:
+          `#${g.index ?? i} ${g.start_sec.toFixed(2)}–${g.end_sec.toFixed(2)} s` +
+          (g.payload?.hz ? ` · ${g.payload.hz.toFixed(1)} Hz` : ''),
+      })),
     }
   }),
 )
 
-const covered = computed(() => durations.value.reduce((a, b) => a + b, 0))
-const coverPct = computed(() =>
-  props.durationSec ? Math.round((covered.value / props.durationSec) * 100) : 0,
-)
+const overshooting = computed(() => tracks.value.filter((t) => t.overshoot > 0))
 </script>
 
 <template>
-  <div class="rail">
-    <svg
-      :viewBox="`0 0 ${W} ${height}`"
-      preserveAspectRatio="none"
-      :style="{ height: `${height}px` }"
-      role="img"
-      :aria-label="`Annotation coverage ${coverPct}%, reference length ${durationSec.toFixed(1)} seconds`"
-    >
-      <defs>
-        <pattern :id="gapId" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-          <line x1="0" y1="0" x2="0" y2="8" stroke="var(--rule-strong)" stroke-width="2" />
-        </pattern>
-      </defs>
+  <div class="timeline">
+    <div v-if="title" class="card-head">
+      <span class="card-title">{{ title }}</span>
+      <span class="card-spec">{{ spec }}</span>
+    </div>
 
-      <rect x="0" y="0" :width="W" :height="height" fill="var(--panel-sunk)" />
+    <div class="grid">
+      <div class="axis">
+        <span v-for="t in ticks" :key="t" class="tick" :style="{ left: pct(t) }">{{ t }}</span>
+      </div>
 
-      <rect
-        v-if="tailGap > 0.5"
-        :x="lastEnd * scale"
-        y="0"
-        :width="tailGap * scale"
-        :height="height"
-        :fill="`url(#${gapId})`"
-      />
+      <!--
+        One band for the whole card, drawn behind the tracks: a tail that no stream reached
+        is a fact about the item, so it reads as one shape across all of them.
+      -->
+      <div class="bands" :style="{ gridRow: `2 / span ${Math.max(tracks.length, 1)}` }">
+        <div
+          v-if="tail > 0.5"
+          class="tail"
+          :style="{ left: pct(durationSec - tail), width: pct(tail) }"
+        />
+      </div>
 
-      <rect
-        v-if="overshoot > 0"
-        :x="durationSec * scale"
-        y="0"
-        :width="overshoot * scale"
-        :height="height"
-        fill="var(--error-soft)"
-      />
+      <template v-for="(t, i) in tracks" :key="t.key">
+        <div class="name" :style="{ gridRow: i + 2 }">{{ t.label }}</div>
+        <div class="track" :style="{ gridRow: i + 2 }">
+          <svg
+            :viewBox="`0 0 ${W} ${trackHeight}`"
+            preserveAspectRatio="none"
+            :style="{ height: `${trackHeight}px` }"
+            role="img"
+            :aria-label="`${t.label}: ${t.count} ${t.unit}, ${t.coverPct}% of ${durationSec.toFixed(1)} seconds covered`"
+          >
+            <line
+              v-for="tk in ticks"
+              :key="tk"
+              :x1="tk * scale"
+              y1="0"
+              :x2="tk * scale"
+              :y2="trackHeight"
+              stroke="#2f2f2f"
+              stroke-width="1"
+              vector-effect="non-scaling-stroke"
+            />
+            <rect
+              v-if="t.overshoot > 0"
+              :x="durationSec * scale"
+              y="0"
+              :width="t.overshoot * scale"
+              :height="trackHeight"
+              fill="var(--error-bg)"
+            />
+            <rect
+              v-for="(b, j) in t.bars"
+              :key="j"
+              :x="b.x"
+              y="3"
+              :width="b.w"
+              :height="trackHeight - 6"
+              :fill="t.colour"
+              fill-opacity="0.9"
+            >
+              <title>{{ b.title }}</title>
+            </rect>
+          </svg>
+        </div>
+      </template>
+    </div>
 
-      <rect
-        v-for="(b, i) in bars"
-        :key="i"
-        :x="b.x"
-        y="4"
-        :width="b.w"
-        :height="height - 8"
-        :fill="colour"
-        fill-opacity="0.85"
-        vector-effect="non-scaling-stroke"
+    <div class="legend">
+      <span v-for="t in tracks" :key="t.key" class="key">
+        <i class="swatch" :style="{ background: t.colour }" />
+        <span class="k-name">{{ t.label }}</span>
+        <span class="tnum">
+          · {{ t.count }} {{ t.unit }}<template v-if="legend === 'coverage'">
+            · {{ t.coverPct }}% covered</template
+          >
+        </span>
+      </span>
+      <span v-if="legend === 'coverage' && tail > 0.5" class="key">
+        <i class="swatch band" />
+        <span class="tnum">{{ tail.toFixed(1) }} s unannotated at the end</span>
+      </span>
+      <span
+        v-for="t in legend === 'coverage' ? overshooting : []"
+        :key="`o-${t.key}`"
+        class="pill error"
       >
-        <title>{{ b.title }}</title>
-      </rect>
-
-      <line
-        :x1="durationSec * scale"
-        y1="0"
-        :x2="durationSec * scale"
-        :y2="height"
-        stroke="var(--ink-muted)"
-        stroke-width="1"
-        vector-effect="non-scaling-stroke"
-      />
-    </svg>
-
-    <div class="legend num">
-      <span>{{ segments.length }} segments · {{ coverPct }}% covered</span>
-      <span v-if="tailGap > 0.5" class="tag warning">{{ tailGap.toFixed(1) }}s missing at end</span>
-      <span v-if="overshoot > 0" class="tag error">{{ overshoot.toFixed(1) }}s past reference</span>
-      <span class="faint">
-        reference {{ durationSec.toFixed(2) }}s<template v-if="referenceSource">
+        {{ t.label }} runs {{ t.overshoot.toFixed(1) }} s past the reference
+      </span>
+      <span v-if="legend === 'coverage'" class="ref tnum">
+        reference {{ durationSec.toFixed(2) }} s<template v-if="referenceSource">
           ({{ referenceSource }})</template
         >
       </span>
@@ -170,19 +210,112 @@ const coverPct = computed(() =>
 </template>
 
 <style scoped>
-.rail svg {
+/*
+  The one dark surface on the page. The timeline is the thing a reader looks at first, so it
+  gets the contrast; everything around it stays paper.
+*/
+.timeline {
+  background: #141414;
+  border-radius: var(--r-card);
+  padding: var(--s5);
+  color: #f0efec;
+  /* The tracks read their colour from these slots; brightened here to lift off the dark
+     ground while keeping each stream recognisably itself. */
+  --stream-1: var(--stream-a1-bright);
+  --stream-2: var(--stream-a2-bright);
+  --error-bg: #4a2622;
+  --error-text: #e8a396;
+  --warning-bg: #3f3418;
+  --warning-text: #e8c98a;
+}
+
+/* In dark the card and the page are nearly the same black, so it takes an edge to stay a
+   card. In light the contrast does that on its own. */
+:root[data-theme='dark'] .timeline { border: 1px solid var(--border-strong); }
+
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s2) var(--s4);
+  margin-bottom: var(--s4);
+  font-size: var(--fs-small);
+}
+.card-title { font-family: var(--mono); color: #f0efec; }
+.card-spec { font-family: var(--mono); color: #8e8b84; font-variant-numeric: tabular-nums; }
+
+.grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--s4);
+  row-gap: var(--s2);
+  align-items: center;
+}
+
+.axis {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  height: 1.1rem;
+}
+.tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: var(--fs-index);
+  color: #8e8b84;
+  font-variant-numeric: tabular-nums;
+}
+.tick:first-child { transform: none; }
+
+.name {
+  grid-column: 1;
+  font-family: var(--mono);
+  font-size: var(--fs-small);
+  color: #b9b6af;
+  white-space: nowrap;
+}
+
+/* Tracks sit above the band, which is the only reason either needs a layer. */
+.track { grid-column: 2; position: relative; z-index: 1; }
+.track svg {
   width: 100%;
   display: block;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
+  border: 1px solid #343434;
+  border-radius: var(--r-sm);
 }
+
+.bands { grid-column: 2; position: relative; z-index: 0; align-self: stretch; pointer-events: none; }
+.tail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+}
+
 .legend {
   display: flex;
-  gap: 10px;
-  align-items: center;
   flex-wrap: wrap;
-  font-size: 11px;
-  color: var(--ink-muted);
-  margin-top: 4px;
+  gap: var(--s2) var(--s5);
+  align-items: center;
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: 1px solid #2c2c2c;
+  font-size: var(--fs-small);
+  color: #b9b6af;
+}
+.key { display: inline-flex; align-items: center; gap: var(--s2); white-space: nowrap; }
+.k-name { font-family: var(--mono); color: #f0efec; }
+.swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.swatch.band { background: rgba(255, 255, 255, 0.16); }
+.ref { color: #8e8b84; }
+
+@media (max-width: 720px) {
+  .timeline { padding: var(--s4); }
+  .grid { column-gap: var(--s3); }
+  .legend { gap: var(--s2) var(--s4); }
 }
 </style>

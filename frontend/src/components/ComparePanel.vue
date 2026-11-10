@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { api } from '../api'
+import { session } from '../session'
 
 const props = defineProps({ layers: { type: Array, default: () => [] } })
 
@@ -49,10 +50,9 @@ async function run() {
 }
 
 /*
-  Worded as disagreement, not as error. Each category says what the two annotations do
-  differently; none of them says either one is wrong. "Annotated only by A" is a fact about
-  the pair, whereas "missing from B" would be a verdict on B that this comparison is in no
-  position to reach.
+  Each label states what the two annotations do differently and leaves it there. "Annotated
+  only by A" is a fact about the pair; a verdict on either annotator is beyond what a
+  comparison can tell.
 */
 const kindLabel = {
   pitch_only: 'Pitch disagrees',
@@ -71,17 +71,10 @@ function label(l) {
   <div class="panel">
     <h2>Annotation comparison</h2>
     <p class="note">
-      Where two independent annotations differ, that is a disagreement between annotators, not
-      an error in the data: neither one is the reference for the other. Problems with an
-      annotation itself are reported separately, by the validators.
-    </p>
-    <p class="note">
-      Pitch is always compared in cents, never in Hz directly, since two annotations may have
-      been made against different tuning references. Pitch and timing are reported separately
-      rather than collapsed into a single agreement score.
+      Differences show where the two annotators disagree. Pitch is compared in cents.
     </p>
 
-    <div class="controls">
+    <div v-if="session.authenticated" class="controls">
       <div>
         <label for="a">Annotation A</label>
         <select id="a" v-model="a">
@@ -102,7 +95,7 @@ function label(l) {
         </select>
       </div>
       <div>
-        <label for="ot">Onset tolerance (seconds)</label>
+        <label for="ot">Onset tolerance (s)</label>
         <input id="ot" v-model="onsetTol" class="num" type="number" step="0.01" />
       </div>
       <div>
@@ -114,49 +107,69 @@ function label(l) {
       </button>
     </div>
 
+    <p v-else class="note quiet">
+      Signing in opens the controls for this comparison: which two annotations to pair, how
+      to pair them, and the tolerances to pair them at.
+    </p>
+
     <div v-if="error" class="error-box">{{ error }}</div>
 
     <template v-if="result">
-      <div class="summary num">
-        <span><b>{{ result.summary.matched }}</b> matched</span>
-        <span class="tag warning" v-if="result.summary.pitch_only_mismatch">
-          {{ result.summary.pitch_only_mismatch }} pitch disagreements
-        </span>
-        <span class="tag warning" v-if="result.summary.timing_only_mismatch">
-          {{ result.summary.timing_only_mismatch }} timing disagreements
-        </span>
-        <span class="tag warning" v-if="result.summary.both_mismatch">
-          {{ result.summary.both_mismatch }} disagree on both
-        </span>
-        <span class="tag info" v-if="result.summary.only_in_a">
-          {{ result.summary.only_in_a }} only in A
-        </span>
-        <span class="tag info" v-if="result.summary.only_in_b">
-          {{ result.summary.only_in_b }} only in B
-        </span>
-        <span class="faint">
-          A4: A {{ result.summary.tuning_reference_a_hz }} Hz ·
-          B {{ result.summary.tuning_reference_b_hz }} Hz
-        </span>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-index">01</div>
+          <div class="stat-value">{{ result.summary.matched }}</div>
+          <div class="stat-label">Matched</div>
+        </div>
+        <div class="stat">
+          <div class="stat-index">02</div>
+          <div class="stat-value">{{ result.summary.pitch_only_mismatch }}</div>
+          <div class="stat-label">Pitch disagreements</div>
+        </div>
+        <div class="stat">
+          <div class="stat-index">03</div>
+          <div class="stat-value">{{ result.summary.timing_only_mismatch }}</div>
+          <div class="stat-label">Timing disagreements</div>
+        </div>
+        <div class="stat">
+          <div class="stat-index">04</div>
+          <div class="stat-value">{{ result.summary.both_mismatch }}</div>
+          <div class="stat-label">Disagree on both</div>
+        </div>
+        <div class="stat">
+          <div class="stat-index">05</div>
+          <div class="stat-value stream-a1">{{ result.summary.only_in_a }}</div>
+          <div class="stat-label">Only in A</div>
+        </div>
+        <div class="stat">
+          <div class="stat-index">06</div>
+          <div class="stat-value stream-a2">{{ result.summary.only_in_b }}</div>
+          <div class="stat-label">Only in B</div>
+        </div>
       </div>
+      <p class="faint num refs">
+        A4: A {{ result.summary.tuning_reference_a_hz }} Hz ·
+        B {{ result.summary.tuning_reference_b_hz }} Hz
+      </p>
 
       <p v-if="!rows.length" class="muted">
         The two annotations agree at these tolerances.
       </p>
-      <table v-else>
+      <div v-else class="table-wrap">
+        <table>
         <thead>
           <tr>
             <th>Disagreement</th>
-            <th>Time</th>
-            <th>Onset delta</th>
-            <th>A pitch</th>
-            <th>B pitch</th>
-            <th>Pitch delta</th>
+            <th class="num">Time</th>
+            <th class="num">Onset delta</th>
+            <th class="num">A pitch</th>
+            <th class="num">B pitch</th>
+            <th class="num">Pitch delta</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(d, i) in rows" :key="i">
-            <td><span class="tag" :class="d.kind.startsWith('only') ? 'info' : 'warning'">{{ kindLabel[d.kind] }}</span></td>
+            <td><span class="cat" :class="d.kind">{{ kindLabel[d.kind] }}</span></td>
             <td class="num">{{ (d.a_start_sec ?? d.b_start_sec)?.toFixed(2) }}s</td>
             <td class="num">{{ d.onset_delta_sec != null ? `${d.onset_delta_sec >= 0 ? '+' : ''}${d.onset_delta_sec.toFixed(3)}s` : '—' }}</td>
             <td class="num">{{ d.a_hz ? `${d.a_hz.toFixed(1)} Hz` : '—' }}</td>
@@ -164,14 +177,15 @@ function label(l) {
             <td class="num">
               <template v-if="d.pitch_delta_cents != null">
                 {{ d.pitch_delta_cents >= 0 ? '+' : '' }}{{ d.pitch_delta_cents.toFixed(0) }} cents
-                <span v-if="d.octaves_apart" class="tag warning">{{ d.octaves_apart }} octaves apart</span>
+                <span v-if="d.octaves_apart" class="tag info">{{ d.octaves_apart }} octaves apart</span>
               </template>
               <template v-else>—</template>
             </td>
           </tr>
         </tbody>
-      </table>
-      <p v-if="result.discrepancies.length > rows.length" class="faint">
+        </table>
+      </div>
+      <p v-if="result.discrepancies.length > rows.length" class="faint tally">
         Showing the first {{ rows.length }} of {{ result.discrepancies.length }}.
       </p>
     </template>
@@ -179,7 +193,59 @@ function label(l) {
 </template>
 
 <style scoped>
-.controls { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 12px 0; }
-.controls select, .controls input { min-width: 120px; }
-.summary { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0 8px; font-size: 13px; }
+.controls {
+  display: flex;
+  gap: var(--s3) var(--s3);
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin: var(--s4) 0 var(--s5);
+}
+.controls > div { min-width: 0; }
+.controls label { white-space: nowrap; }
+/* One height for every control in the row, so the labels above them line up. */
+.controls select, .controls input, .controls button { height: 2.25rem; }
+.controls button { display: inline-flex; align-items: center; align-self: flex-end; }
+.controls select { min-width: 7.5rem; }
+.controls input { width: 7rem; }
+
+/* The headline of the comparison: six counts, read across. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--s4);
+  margin: 0 0 var(--s4);
+}
+.stat { min-width: 0; }
+.stat-index {
+  font-family: var(--mono);
+  font-size: var(--fs-index);
+  color: var(--text-faint);
+  margin-bottom: var(--s1);
+}
+.stat-value {
+  font-size: var(--fs-stat);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.stat-value.stream-a1 { color: var(--stream-a1); }
+.stat-value.stream-a2 { color: var(--stream-a2); }
+.stat-label {
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+  margin-top: var(--s1);
+}
+.quiet { margin-bottom: var(--s5); }
+.refs { font-size: var(--fs-micro); margin: 0 0 var(--s4); }
+.tally { margin: var(--s2) 0 0; font-size: var(--fs-micro); }
+@media (max-width: 900px) {
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4) var(--s3); }
+}
+@media (max-width: 560px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .controls > div { flex: 1 1 9rem; }
+  .controls select, .controls input { width: 100%; }
+}
 </style>

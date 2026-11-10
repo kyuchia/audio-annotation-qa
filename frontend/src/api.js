@@ -5,6 +5,31 @@ function csrf() {
   return m ? decodeURIComponent(m[1]) : ''
 }
 
+/*
+  What a reader is told when a request fails.
+
+  A 400 carries this project's own text: it names the field, the value and what was
+  expected, which is the most useful sentence anyone could write about that failure, so it
+  is passed through. Every other status arrives in the framework's words —
+  "Authentication credentials were not provided" describes an HTTP exchange the reader
+  never saw and cannot act on — so the app answers for itself.
+*/
+function failureMessage(status, data) {
+  if (status === 400) {
+    const own = data?.detail || Object.values(data || {}).flat().join('; ')
+    if (own) return own
+  }
+  if (status === 403 && String(data?.detail || '').startsWith('CSRF')) {
+    // Signed in, but the browser's token no longer matches the session.
+    return 'This sign-in has expired. Sign in again to make this change.'
+  }
+  if (status === 401 || status === 403) return 'Sign in to make this change.'
+  if (status === 404) return 'That is no longer here. This page may have been open a while.'
+  if (status === 413) return 'That file is too large for the server to accept.'
+  if (status >= 500) return 'The server could not finish that request.'
+  return 'That request could not be completed.'
+}
+
 async function request(path, { method = 'GET', body, raw = false } = {}) {
   const headers = {}
   let payload = body
@@ -14,23 +39,33 @@ async function request(path, { method = 'GET', body, raw = false } = {}) {
   }
   if (method !== 'GET') headers['X-CSRFToken'] = csrf()
 
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    body: payload,
-    credentials: 'include',
-  })
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      body: payload,
+      credentials: 'include',
+    })
+  } catch {
+    // fetch rejects only when the request never got an answer.
+    throw new Error('The app could not reach the server. Check that it is running, then try again.')
+  }
   if (raw) return res
   const text = await res.text()
-  const data = text ? JSON.parse(text) : null
-  if (!res.ok) {
-    const detail = data?.detail || Object.values(data || {}).flat().join('; ') || `HTTP ${res.status}`
-    throw new Error(detail)
+  let data = null
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    // A failure can arrive as a server error page. Its status still says what happened.
+    data = null
   }
+  if (!res.ok) throw new Error(failureMessage(res.status, data))
   return data
 }
 
 export const api = {
+  me: () => request('/me/'),
   layerTypes: () => request('/layer-types/'),
   comparatorDefaults: () => request('/comparator-defaults/'),
 
@@ -56,6 +91,7 @@ export const api = {
   addCorrection: (body) => request('/corrections/', { method: 'POST', body }),
   corrections: (layerId) => request(`/corrections/?layer=${layerId}`),
 
+  comparisons: (params) => request(`/comparisons/?${new URLSearchParams(params)}`),
   compare: (body) => request('/comparisons/', { method: 'POST', body }),
   acknowledge: (issueId, note) =>
     request(`/validation-issues/${issueId}/acknowledge/`, { method: 'POST', body: { note } }),

@@ -5,24 +5,37 @@ import CoverageRail from '../components/CoverageRail.vue'
 import ComparePanel from '../components/ComparePanel.vue'
 import IssueList from '../components/IssueList.vue'
 import LayerPanel from '../components/LayerPanel.vue'
+import SignInNote from '../components/SignInNote.vue'
 import UploadPanel from '../components/UploadPanel.vue'
+import { session } from '../session'
 
 const props = defineProps({ id: { type: String, required: true } })
 
 const item = ref(null)
 const issues = ref([])
+const segmentsByLayer = ref({})
 const loading = ref(true)
 const error = ref('')
 const busy = ref(false)
-const railKey = ref(0)
 
+/*
+  The segments of every layer are loaded here, once, because the timeline draws all of the
+  item's streams in one card and the layer rows below report on the same data. One request
+  per layer, the same endpoint each layer used to ask for itself.
+*/
 async function load() {
   loading.value = true
   error.value = ''
   try {
     item.value = await api.item(props.id)
     issues.value = await api.itemIssues(props.id)
-    railKey.value += 1
+    const layers = item.value.layers || []
+    const lists = await Promise.all(layers.map((l) => api.segments(l.id)))
+    const byLayer = {}
+    layers.forEach((l, i) => {
+      byLayer[l.id] = lists[i]
+    })
+    segmentsByLayer.value = byLayer
   } catch (e) {
     error.value = e.message
   } finally {
@@ -50,15 +63,6 @@ async function acknowledge(issue) {
   issues.value = issues.value.filter((i) => i.id !== issue.id)
 }
 
-const grouped = computed(() => {
-  const out = {}
-  for (const layer of item.value?.layers || []) {
-    const key = `${layer.layer_type}/${layer.stream_key || '—'}`
-    ;(out[key] ||= []).push(layer)
-  }
-  return out
-})
-
 /*
   Which file an exported SV session will actually open, mirroring Item.playback_audio() on
   the backend. Shown because a session pointed at the stand-in looks and plays entirely
@@ -74,7 +78,7 @@ const exportAudioPath = computed(() => {
 
 /*
   The denominator for coverage. This mirrors Item.coverage_duration() on the
-  backend exactly, wording included — if the rail divided by the header duration
+  backend exactly, wording included — if the timeline divided by the header duration
   while the validators divided by the recording length, the same screen would
   show two different tail gaps for the same layer, and neither number would be
   obviously the wrong one.
@@ -87,6 +91,48 @@ const coverage = computed(() => {
   if (it?.duration_sec) return { sec: it.duration_sec, source: 'audio header' }
   return { sec: 0, source: 'unknown' }
 })
+
+/* Display only: a note layer is counted in notes, anything else in segments. */
+function unitFor(layerType) {
+  return layerType === 'note_pitch' ? 'notes' : 'segments'
+}
+
+function countLabel(layer) {
+  return `${layer.segment_count} ${unitFor(layer.layer_type)}`
+}
+
+/*
+  A track per layer. The label is the stream on its own, and carries the version as well
+  once a stream has more than one layer on the page — otherwise two tracks would answer to
+  the same name.
+*/
+const timelineStreams = computed(() => {
+  const layers = item.value?.layers || []
+  const perStream = {}
+  for (const l of layers) {
+    const key = l.stream_key || l.layer_type
+    perStream[key] = (perStream[key] || 0) + 1
+  }
+  return layers.map((l) => {
+    const key = l.stream_key || l.layer_type
+    return {
+      key,
+      label: perStream[key] > 1 ? `${key} v${l.version}` : key,
+      unit: unitFor(l.layer_type),
+      segments: segmentsByLayer.value[l.id] || [],
+    }
+  })
+})
+
+function khz(rate) {
+  return rate ? `${Number((rate / 1000).toFixed(3))} kHz` : '—'
+}
+
+function channelName(channels) {
+  if (channels === 1) return 'mono'
+  if (channels === 2) return 'stereo'
+  return channels ? `${channels} ch` : '—'
+}
 </script>
 
 <template>
@@ -94,135 +140,119 @@ const coverage = computed(() => {
   <div v-else-if="error" class="error-box">{{ error }}</div>
 
   <div v-else-if="item" class="stack">
-    <div class="spread">
-      <div>
-        <div class="eyebrow">
-          <RouterLink to="/items">Items</RouterLink> / {{ item.corpus_slug }}
-        </div>
-        <h1>{{ item.display_name }}</h1>
-        <p class="ids num faint">
-          song_id <code>{{ item.song_id }}</code>
-          <span v-if="item.song_id_is_provisional" class="tag warning">provisional</span>
-          · disk <code>{{ item.disk_path }}/{{ item.audio_filename }}</code>
-        </p>
-      </div>
-      <div class="row">
-        <a class="btn" :href="api.sessionUrl(item.id)">Download SV session</a>
-        <button class="primary" :disabled="busy" @click="revalidate">
-          {{ busy ? 'Checking…' : 'Re-run validators' }}
-        </button>
-      </div>
-    </div>
-
-    <div class="facts">
-      <div class="fact">
-        <div class="eyebrow">Sample rate</div>
-        <div class="num big">{{ item.sample_rate ?? '—' }}<small>Hz</small></div>
-      </div>
-      <div class="fact">
-        <div class="eyebrow">Channels</div>
-        <div class="num big">{{ item.channels ?? '—' }}</div>
-      </div>
-      <div class="fact">
-        <div class="eyebrow">Duration</div>
-        <div class="num big">{{ item.duration_sec?.toFixed(2) ?? '—' }}<small>s</small></div>
-      </div>
-      <div class="fact">
-        <div class="eyebrow">Format</div>
-        <div class="num big small-text">{{ item.audio_format || '—' }}</div>
-      </div>
-      <div class="fact wide">
-        <div class="eyebrow">Export audio</div>
-        <div class="export-audio">
-          <span v-if="item.has_recording" class="tag ok">linked recording</span>
-          <span v-else-if="item.audio_is_proxy" class="tag warning">stand-in audio</span>
-          <span v-else class="tag ok">audio beside the annotations</span>
-          <code class="faint">{{ exportAudioPath }}</code>
-        </div>
-      </div>
-      <div class="fact wide">
-        <div class="eyebrow">metadata</div>
-        <div>
-          <span v-if="!item.in_metadata" class="tag warning">on disk, not in CSV</span>
-          <span v-else-if="item.metadata_match_method !== 'exact'" class="tag info">
-            matched by the “{{ item.metadata_match_method }}” rule (inferred)
-          </span>
-          <span v-else class="tag ok">exact match</span>
-
-        </div>
-      </div>
-    </div>
-    <p class="note">
-      The four values above are read from the audio file header, not from what the metadata
-      claims. Frame indices in a Sonic Visualiser export are derived from this sample rate.
-      <template v-if="item.audio_is_proxy">
-        The file on disk is a stand-in rather than the recording the annotations were made
-        against, so coverage is measured against the recording length claimed in the metadata
-        ({{ item.reference_duration_sec?.toFixed(2) ?? '—' }}s) instead of this header duration.
-      </template>
-    </p>
-
-    <div class="panel">
+    <div class="header">
       <div class="spread">
+        <div class="titles">
+          <div class="eyebrow crumb">
+            <RouterLink to="/items">Items</RouterLink> / {{ item.corpus_slug }}
+          </div>
+          <h1>{{ item.display_name }}</h1>
+          <p class="title-sub">
+            {{ item.layers.length }} annotation layers ·
+            {{ item.duration_sec?.toFixed(2) ?? '—' }} s
+          </p>
+          <p class="ids">
+            <code>{{ item.song_id }}</code>
+            <span v-if="item.song_id_is_provisional" class="pill warning">provisional</span>
+            <code class="path">{{ exportAudioPath }}</code>
+          </p>
+        </div>
+        <div class="actions">
+          <div class="row">
+            <a class="btn" :href="api.sessionUrl(item.id)">Download SV session</a>
+            <button v-if="session.authenticated" :disabled="busy" @click="revalidate">
+              {{ busy ? 'Checking…' : 'Re-run validators' }}
+            </button>
+          </div>
+          <SignInNote v-if="session.ready && !session.authenticated" class="signin-slot" />
+        </div>
+      </div>
+
+      <div class="meta-row">
+        <span class="chip">Sample rate <span class="chip-value">{{ khz(item.sample_rate) }}</span></span>
+        <span class="chip">Channels <span class="chip-value">{{ channelName(item.channels) }}</span></span>
+        <span class="chip">Duration <span class="chip-value">{{ item.duration_sec?.toFixed(2) ?? '—' }} s</span></span>
+        <span class="chip">Format <span class="chip-value">{{ item.audio_format || '—' }}</span></span>
+        <span v-if="item.audio_is_proxy" class="pill warning">Stand-in audio</span>
+        <span v-if="!item.in_metadata" class="pill warning">Listed on disk only</span>
+        <span v-else-if="item.metadata_match_method !== 'exact'" class="tag">
+          matched by the “{{ item.metadata_match_method }}” rule (inferred)
+        </span>
+        <span v-else class="ok-state">Metadata matches exactly</span>
+      </div>
+    </div>
+
+    <CoverageRail
+      v-if="item.layers.length"
+      :streams="timelineStreams"
+      :duration-sec="coverage.sec"
+      :reference-source="coverage.source"
+    />
+
+    <ComparePanel v-if="item.layers.length > 1" class="section" :layers="item.layers" />
+
+    <div class="section">
+      <h2>Annotation layers</h2>
+      <p v-if="!item.layers.length" class="muted">
+        No annotations yet. Use the upload panel below to import a note or F0 CSV.
+      </p>
+      <div class="layers">
+        <LayerPanel
+          v-for="layer in item.layers"
+          :key="layer.id"
+          :layer="layer"
+          :segments="segmentsByLayer[layer.id] || []"
+          :count-label="countLabel(layer)"
+          @changed="load"
+        />
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="spread findings-head">
         <h2>Open findings</h2>
         <span class="faint num">{{ issues.length }}</span>
       </div>
       <IssueList :issues="issues" @acknowledge="acknowledge" />
     </div>
 
-    <div class="panel">
-      <h2>Annotation layers</h2>
-      <p class="note">
-        Layers are grouped by stream. Within one stream, a higher version supersedes the one
-        before it; separate streams are parallel annotations of the same audio and neither
-        supersedes the other.
-      </p>
-      <p v-if="!item.layers.length" class="muted">
-        No annotations yet. Use the upload panel below to import a note or F0 CSV.
-      </p>
-      <div v-for="(layers, key) in grouped" :key="key" class="group">
-        <div class="eyebrow group-head">{{ key }}</div>
-        <div class="stack">
-          <LayerPanel
-            v-for="layer in layers"
-            :key="`${layer.id}-${railKey}`"
-            :layer="layer"
-            :duration-sec="coverage.sec"
-            :reference-source="coverage.source"
-            @changed="load"
-          />
-        </div>
-      </div>
-    </div>
-
-    <ComparePanel v-if="item.layers.length > 1" :layers="item.layers" />
-
-    <UploadPanel :item-id="item.id" @uploaded="load" />
+    <UploadPanel
+      v-if="session.authenticated"
+      class="section"
+      :item-id="item.id"
+      @uploaded="load"
+    />
   </div>
 </template>
 
 <style scoped>
-.ids { font-size: 12px; margin: 4px 0 0; }
-.ids code { font-size: 12px; }
-.facts {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  background: var(--rule);
-  border: 1px solid var(--rule);
-  border-radius: var(--r);
-  overflow: hidden;
+.header { display: flex; flex-direction: column; gap: var(--s4); }
+.titles { min-width: 0; }
+.crumb { margin-bottom: var(--s2); }
+.actions { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: var(--s3); }
+.signin-slot { text-align: right; }
+.ids {
+  font-size: var(--fs-small);
+  margin: var(--s3) 0 0;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+  align-items: baseline;
 }
-.fact { background: var(--panel); padding: 10px 13px; }
-.fact.wide { grid-column: span 2; }
-.big { font-size: 22px; font-weight: 500; line-height: 1.25; }
-.big small { font-size: 12px; color: var(--ink-faint); margin-left: 2px; }
-.small-text { font-size: 13px; padding-top: 6px; }
-.export-audio { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
-.export-audio code { font-size: 11px; word-break: break-all; }
-.group { margin-top: 14px; }
-.group-head { margin-bottom: 6px; }
-@media (max-width: 820px) {
-  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ids code { color: var(--text-muted); }
+.ids .path { overflow-wrap: anywhere; }
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+  align-items: center;
+}
+.layers { margin-top: var(--s2); }
+.findings-head { align-items: baseline; margin-bottom: var(--s3); }
+.findings-head h2 { margin-bottom: 0; }
+/* A heading and its count are short enough to stay a row at any width. */
+@media (max-width: 640px) {
+  .spread.findings-head { flex-direction: row; }
 }
 </style>

@@ -5,6 +5,7 @@ import { api } from '../api'
 const props = defineProps({ itemId: { type: Number, required: true } })
 const emit = defineEmits(['uploaded'])
 
+const open = ref(false)
 const file = ref(null)
 const streamKey = ref('A1')
 const columnContract = ref('onset_offset_hz')
@@ -43,18 +44,21 @@ async function upload() {
 
 <template>
   <div class="panel">
-    <h2>Upload annotation</h2>
+    <div class="spread head">
+      <div>
+        <h2>Upload a new version</h2>
+        <p class="note">
+          The file is parsed into structured data and opened as a new version, leaving every
+          existing layer as it is.
+        </p>
+      </div>
+      <button class="quiet" @click="open = !open">{{ open ? 'Close' : 'Upload +' }}</button>
+    </div>
+
+    <template v-if="open">
     <p class="note">
-      The file is parsed into structured data and opened as a new version; an existing layer is
-      never overwritten. Validators run immediately after the upload.
-    </p>
-    <p class="note">
-      Say which columns the file holds. Three unlabelled numeric columns starting with a time
-      can be either layout, and a file read under the wrong one imports without complaint —
-      so the upload is refused when the data contradicts the choice rather than stored.
-      A stream is a parallel track within this item: one key per independent annotator
-      (A1, A2), or per source. Two streams are parallel annotations and never supersede each
-      other; a new version within one stream does.
+      Say which columns the file holds and which stream it belongs to, and the upload is
+      checked against that choice.
     </p>
 
     <div class="grid">
@@ -84,9 +88,10 @@ async function upload() {
       </div>
     </div>
 
-    <button class="primary" :disabled="!file || busy" @click="upload">
+    <button :disabled="!file || busy" @click="upload">
       {{ busy ? 'Parsing…' : 'Upload and create a new version' }}
     </button>
+    </template>
 
     <div v-if="error" class="error-box">{{ error }}</div>
 
@@ -105,10 +110,21 @@ async function upload() {
 </template>
 
 <style scoped>
-.grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; margin: 12px 0; }
+.head { align-items: center; gap: var(--s4); }
+.head h2 { margin-bottom: var(--s2); }
+.head .note { margin-bottom: 0; }
+.head button { flex: none; }
+@media (max-width: 640px) { .head { align-items: flex-start; } }
+.grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: var(--s3) var(--s4);
+  margin: var(--s4) 0;
+}
 .grid .wide { grid-column: 1 / -1; }
 .grid input, .grid select { width: 100%; }
-.result { margin-top: 11px; font-size: 13px; }
-.result ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.result { margin-top: var(--s4); font-size: var(--fs-body); }
+.result ul { margin: var(--s2) 0 0; padding-left: var(--s5); font-size: var(--fs-small); }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
 </style>

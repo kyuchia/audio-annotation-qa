@@ -1,12 +1,15 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
+import SignInNote from '../components/SignInNote.vue'
+import { session } from '../session'
 
 const items = ref([])
 const corpora = ref([])
 const loading = ref(true)
 const busy = ref('')
 const error = ref('')
+const notice = ref(null)
 
 const corpus = ref('')
 const q = ref('')
@@ -65,21 +68,38 @@ watch(q, () => {
 
 const current = computed(() => corpora.value.find((c) => c.slug === corpus.value))
 
+/*
+  What a rescan did, read off its counts. The report also carries totals a reader has no
+  decision to make about — segments written, metadata rows seen — so the sentence names
+  the numbers that changed the page, and drops the layers clause when nothing new came in.
+*/
+function rescanSummary(r) {
+  const touched = r.items_created + r.items_updated
+  const parts = [
+    r.items_created ? `${r.items_created} added` : 'none added',
+    r.items_updated ? `${r.items_updated} refreshed` : 'none refreshed',
+  ]
+  if (r.layers_created) {
+    parts.push(`${r.layers_created} ${r.layers_created === 1 ? 'layer' : 'layers'} added`)
+  }
+  return `Rescanned ${touched} ${touched === 1 ? 'item' : 'items'}: ${parts.join(', ')}.`
+}
+
 async function rescan() {
   if (!current.value) return
   busy.value = 'scan'
   error.value = ''
+  notice.value = null
   try {
     const r = await api.ingestVocadito(current.value.id, {})
     await load()
-    busy.value = ''
-    alert(
-      `${r.items_created} items created, ${r.items_updated} updated, ` +
-        `${r.layers_created} layers.\n` +
-        (r.warnings.length ? `\nNeeds attention:\n${r.warnings.slice(0, 12).join('\n')}` : ''),
-    )
+    notice.value = {
+      text: rescanSummary(r),
+      warnings: (r.warnings || []).slice(0, 12),
+    }
   } catch (e) {
     error.value = e.message
+  } finally {
     busy.value = ''
   }
 }
@@ -88,6 +108,7 @@ async function validateAll() {
   if (!current.value) return
   busy.value = 'validate'
   error.value = ''
+  notice.value = null
   try {
     await api.validateCorpus(current.value.id)
     await load()
@@ -98,40 +119,86 @@ async function validateAll() {
   }
 }
 
+/*
+  Display order. The API sorts song_id as text, which puts vocadito_16 ahead of
+  vocadito_8 because "1" sorts before "8". Comparing with numeric collation reads the
+  digits as a number, so the list runs the way the corpus is numbered.
+*/
+const sortedItems = computed(() =>
+  [...items.value].sort((a, b) =>
+    a.song_id.localeCompare(b.song_id, undefined, { numeric: true, sensitivity: 'base' }),
+  ),
+)
+
+/* "44.1 kHz · mono · 17.28 s" — the three audio facts as one readable line. */
+function audioSummary(item) {
+  const khz = `${Number((item.sample_rate / 1000).toFixed(3))} kHz`
+  const channels = item.channels === 1 ? 'mono' : item.channels === 2 ? 'stereo' : `${item.channels} ch`
+  return `${khz} · ${channels} · ${item.duration_sec.toFixed(2)} s`
+}
+
 const totals = computed(() => ({
   errors: items.value.reduce((n, i) => n + i.open_error_count, 0),
   warnings: items.value.reduce((n, i) => n + i.open_warning_count, 0),
   orphans: items.value.filter((i) => !i.in_metadata).length,
   unprobed: items.value.filter((i) => !i.media_is_probed).length,
+  // Display only: the second line of the page title.
+  layers: items.value.reduce((n, i) => n + i.layer_count, 0),
 }))
 </script>
 
 <template>
   <div class="stack">
     <div class="spread">
-      <div>
-        <div class="eyebrow">Items</div>
+      <div class="titles">
         <h1>{{ current?.name || 'All corpora' }}</h1>
-        <p class="muted summary num" v-if="!loading">
-          {{ items.length }} items ·
-          <span v-if="totals.errors">{{ totals.errors }} errors · </span>
-          <span v-if="totals.warnings">{{ totals.warnings }} warnings · </span>
-          <span v-if="totals.orphans">{{ totals.orphans }} not in metadata CSV · </span>
-          <span v-if="totals.unprobed">{{ totals.unprobed }} with no header read</span>
-          <span v-if="!totals.errors && !totals.warnings && !totals.orphans">clean</span>
+        <p class="title-sub" v-if="!loading">
+          {{ items.length }} items · {{ totals.layers }} layers
+        </p>
+        <p class="status-line row" v-if="!loading">
+          <span v-if="totals.errors" class="pill error">{{ totals.errors }} errors</span>
+          <span v-if="totals.warnings" class="pill warning">{{ totals.warnings }} warnings</span>
+          <span v-if="totals.orphans" class="pill warning">
+            {{ totals.orphans }} listed on disk only
+          </span>
+          <span v-if="totals.unprobed" class="pill warning">
+            {{ totals.unprobed }} awaiting a header read
+          </span>
+          <span
+            v-if="!totals.errors && !totals.warnings && !totals.orphans && !totals.unprobed"
+            class="ok-state"
+          >
+            All items clean
+          </span>
         </p>
       </div>
-      <div class="row">
-        <button :disabled="!current || busy" @click="rescan">
+      <div v-if="session.authenticated" class="row">
+        <!--
+          Boolean, because `busy` is a string: `!current || busy` yielded '' whenever a
+          corpus was selected, and Vue renders disabled="" for anything other than
+          false/null/undefined — which disabled both buttons permanently.
+        -->
+        <button :disabled="!current || Boolean(busy)" @click="rescan">
           {{ busy === 'scan' ? 'Scanning…' : 'Rescan dataset' }}
         </button>
-        <button class="primary" :disabled="!current || busy" @click="validateAll">
+        <button class="primary" :disabled="!current || Boolean(busy)" @click="validateAll">
           {{ busy === 'validate' ? 'Checking…' : 'Run validators' }}
         </button>
       </div>
+      <SignInNote v-else-if="session.ready" class="signin-slot" />
     </div>
 
     <div v-if="error" class="error-box">{{ error }}</div>
+
+    <div v-if="notice" class="notice-box">
+      <p>{{ notice.text }}</p>
+      <template v-if="notice.warnings.length">
+        <p class="notice-head">Needs attention</p>
+        <ul>
+          <li v-for="(w, i) in notice.warnings" :key="i">{{ w }}</li>
+        </ul>
+      </template>
+    </div>
 
     <div class="panel controls">
       <div>
@@ -142,21 +209,21 @@ const totals = computed(() => ({
         </select>
       </div>
       <div class="grow">
-        <label for="q">Search song_id or name</label>
-        <input id="q" v-model="q" placeholder="e.g. vocadito_21" />
+        <label for="q">Search</label>
+        <input id="q" v-model="q" placeholder="vocadito_21" />
       </div>
       <div>
         <label>Show only</label>
         <div class="row">
-          <button :class="{ primary: filter === 'all' }" @click="filter = 'all'">All</button>
-          <button :class="{ primary: filter === 'issues' }" @click="filter = 'issues'">
+          <button :class="{ selected: filter === 'all' }" @click="filter = 'all'">All</button>
+          <button :class="{ selected: filter === 'issues' }" @click="filter = 'issues'">
             Open issues
           </button>
-          <button :class="{ primary: filter === 'no-metadata' }" @click="filter = 'no-metadata'">
-            Not in metadata
+          <button :class="{ selected: filter === 'no-metadata' }" @click="filter = 'no-metadata'">
+            On disk only
           </button>
-          <button :class="{ primary: filter === 'unprobed' }" @click="filter = 'unprobed'">
-            Header not read
+          <button :class="{ selected: filter === 'unprobed' }" @click="filter = 'unprobed'">
+            Awaiting header read
           </button>
         </div>
       </div>
@@ -167,67 +234,101 @@ const totals = computed(() => ({
       <p v-else-if="!items.length" class="muted">
         No items match. Pick a corpus and press “Rescan dataset” to bring the data in.
       </p>
-      <table v-else>
+      <div v-else class="table-wrap">
+        <table>
         <thead>
           <tr>
-            <th>song_id</th>
+            <th>Song ID</th>
             <th>Name</th>
-            <th>metadata</th>
-            <th>Audio (read from header)</th>
-            <th>layers</th>
-            <th>Open issues</th>
+            <th class="tnum">Audio</th>
+            <th class="tnum right">Layers</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in items" :key="item.id">
+          <tr v-for="item in sortedItems" :key="item.id">
             <td>
               <RouterLink :to="`/items/${item.id}`" class="num">{{ item.song_id }}</RouterLink>
-              <span v-if="item.song_id_is_provisional" class="tag warning">provisional</span>
+              <span v-if="item.song_id_is_provisional" class="pill warning">provisional</span>
             </td>
             <td>{{ item.display_name }}</td>
-            <td>
-              <span v-if="!item.in_metadata" class="tag warning">on disk, not in CSV</span>
-              <span v-else-if="item.metadata_match_method !== 'exact'" class="tag info">
-                {{ item.metadata_match_method }} (inferred)
-              </span>
-              <span v-else class="tag ok">matched</span>
+            <td class="tnum audio-cell">
+              <template v-if="item.media_is_probed">{{ audioSummary(item) }}</template>
+              <span v-else class="pill error">awaiting a header read</span>
             </td>
-            <td class="num">
-              <template v-if="item.media_is_probed">
-                {{ item.sample_rate }} Hz · {{ item.channels }}ch ·
-                {{ item.duration_sec.toFixed(2) }}s
-              </template>
-              <span v-else class="tag error">not read</span>
-            </td>
-            <td class="num">{{ item.layer_count }}</td>
+            <td class="tnum right">{{ item.layer_count }}</td>
             <td>
-              <span v-if="item.open_error_count" class="tag error">
-                {{ item.open_error_count }} errors
-              </span>
-              <span v-if="item.open_warning_count" class="tag warning">
-                {{ item.open_warning_count }} warnings
-              </span>
-              <span v-if="!item.open_error_count && !item.open_warning_count" class="tag ok">
-                clean
-              </span>
+              <div class="status-cell">
+                <span v-if="item.open_error_count" class="pill error">
+                  {{ item.open_error_count }} errors
+                </span>
+                <span v-if="item.open_warning_count" class="pill warning">
+                  {{ item.open_warning_count }} warnings
+                </span>
+                <span v-if="!item.in_metadata" class="pill warning">listed on disk only</span>
+                <span v-else-if="item.metadata_match_method !== 'exact'" class="tag">
+                  {{ item.metadata_match_method }} (inferred)
+                </span>
+                <span
+                  v-if="
+                    !item.open_error_count &&
+                    !item.open_warning_count &&
+                    item.in_metadata &&
+                    item.metadata_match_method === 'exact'
+                  "
+                  class="ok-state"
+                >
+                  clean
+                </span>
+              </div>
             </td>
           </tr>
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
 
-    <p class="note">
-      Audio specs are always read from the file header; the values claimed in metadata are not
-      trusted. “On disk, not in CSV” is not an error — those items are invisible to every script
-      that reads the CSV, and this is the one place they show up at all.
-    </p>
   </div>
 </template>
 
 <style scoped>
-.controls { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
-.grow { flex: 1; min-width: 180px; }
+.titles { min-width: 0; }
+/* The line stands where the buttons stood, on the title's own baseline. */
+.signin-slot { flex: none; padding-top: var(--s2); text-align: right; }
+.status-line { margin: var(--s4) 0 0; gap: var(--s2); }
+/*
+  The three fields start at the same line: every label is one line of the same size, and
+  every control below it is the same height, so "Show only" and its chips sit on the grid
+  the Corpus and Search fields set.
+*/
+.controls {
+  display: flex;
+  gap: var(--s4);
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding-bottom: var(--s5);
+  border-bottom: 1px solid var(--border);
+}
+.controls select, .controls input, .controls button { height: 2.25rem; }
+.controls button { display: inline-flex; align-items: center; }
+.grow { flex: 1; min-width: 11rem; }
 .grow input { width: 100%; }
-.summary { font-size: 13px; margin: 4px 0 0; }
-td .tag { margin-left: 5px; }
+td .pill, td .tag { margin-left: var(--s2); }
+/* The id is the row's handle, so it reads as an identifier first and a link second: no
+   rule under it until a reader goes looking for one. */
+td a.num { font-weight: 500; text-decoration: none; }
+td a.num:hover { text-decoration: underline; text-decoration-color: currentColor; }
+.table-wrap { max-height: none; }
+/* A chosen filter, which is a state rather than an action: black is reserved for the one
+   primary action on the page. */
+.controls .selected {
+  border: 1.2px solid var(--text);
+  background: var(--surface);
+  font-weight: 600;
+}
+.audio-cell { white-space: nowrap; }
+.status-cell { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); align-items: center; }
+@media (max-width: 720px) {
+  .controls { gap: var(--s3); }
+}
 </style>

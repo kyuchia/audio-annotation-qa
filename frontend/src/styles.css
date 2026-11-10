@@ -1,48 +1,133 @@
 /*
-  What this interface is: an instrument panel that researchers and reviewers stare at
-  for long stretches, not a showcase page. Hence the choices below: a desaturated cool
-  grey ground, high information density, tabular figures everywhere numbers appear, and
-  colour reserved for exactly two jobs — severity, and telling one annotation stream
-  from another.
+  An instrument panel for reading annotation data over long stretches. The page is mostly
+  paper and type: sections are separated by space and hairlines, colour appears only where
+  it carries meaning, and the one dark surface on the page is the annotation timeline, so
+  the eye lands there first.
 
-  The one place we allow a real visual focal point is the coverage rail (CoverageRail).
-  It answers "how far do the annotations reach, and how much is missing at the end" at a
-  glance. Everything else stays quiet so that it can.
+  Colour has three jobs and no others:
+    · accent      links and identifiers
+    · stream a1 / stream a2   telling two parallel annotations apart
+    · ok / warning / error    the state of a finding
+
+  Light is the default and stays the default whatever the operating system prefers. Dark
+  is available by setting data-theme="dark" on the document element.
 */
 
 :root {
-  --surface: #eef1f3;
-  --panel: #ffffff;
-  --panel-sunk: #f6f8f9;
-  --ink: #10161c;
-  --ink-muted: #5c6a75;
-  --ink-faint: #8b98a2;
-  --rule: #d3dbe0;
-  --rule-strong: #b6c2c9;
+  /* --- surfaces and ink ------------------------------------------------ */
+  --bg: #f4f4f2;
+  --surface: #ffffff;
+  --surface-sunk: #fafaf8;
+  --border: #dad9d4;
+  --border-strong: #c4c2bb;
+  --text: #111111;
+  --text-muted: #4a4945;
+  --text-faint: #7d7b75;
 
-  --accent: #1b4b6b;
-  --accent-soft: #e4edf2;
-  --error: #a32c1e;
-  --error-soft: #f8e8e6;
-  --warn: #8a6a12;
-  --warn-soft: #faf1dc;
-  --ok: #1e6b4f;
-  --ok-soft: #e4f0ea;
+  /* --- accent: links and identifiers ----------------------------------- */
+  --accent: #2459e6;
+  --accent-soft: #e6ecfd;
 
-  /* Voice colours are aligned with the SV colourName values used by the .sv export,
-     so the same part looks the same in the console and in Sonic Visualiser. */
-  /* One colour per parallel stream in a view, assigned by order rather than by name:
-     a name-to-colour table only covers the names it was written with. */
-  --stream-1: #6b4ba8;
-  --stream-2: #1e6b4f;
-  --stream-3: #b5651d;
-  --stream-4: #1b4b6b;
+  /* --- parallel annotation streams ------------------------------------- */
+  --stream-a1: #4d6fd6;
+  --stream-a2: #d2693f;
+  /* Brightened for the dark timeline card, where the base pair sits too close to the
+     background to separate cleanly. */
+  --stream-a1-bright: #6f8fe8;
+  --stream-a2-bright: #e3845e;
 
-  --mono: 'IBM Plex Mono', ui-monospace, monospace;
-  --cond: 'IBM Plex Sans Condensed', 'Noto Sans TC', sans-serif;
-  --sans: 'IBM Plex Sans', 'Noto Sans TC', system-ui, sans-serif;
+  /* CoverageRail picks its colour by hashing the stream key; these are the slots it
+     reads. a1 and a2 land on the first two. */
+  --stream-1: var(--stream-a1);
+  --stream-2: var(--stream-a2);
+  --stream-3: #5b8f6a;
+  --stream-4: #8b6bb1;
 
-  --r: 3px;
+  /* --- state ------------------------------------------------------------ */
+  --ok: #23794a;
+  --warning-bg: #f7e8c8;
+  --warning-text: #7a5310;
+  /* Metadata chips: a fact carries no state, so it gets no colour. */
+  --chip-bg: #e6e5e1;
+  --chip-text: #3f3e3a;
+  /* Desaturated so it reads as information rather than alarm, and dark enough on its own
+     tint to stay comfortably readable. */
+  --error-bg: #f6e3df;
+  --error-text: #8f3a2e;
+
+  /* --- type ------------------------------------------------------------- */
+  --sans: 'Public Sans', system-ui, -apple-system, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --fs-title: 36px;
+  --fs-h2: 20px;
+  --fs-h3: 16px;
+  --fs-body: 16px;
+  /* Table cells, and the form controls beside them. */
+  --fs-cell: 15px;
+  /* Field labels, table headers, notes, chips and buttons. */
+  --fs-small: 14px;
+  /* Tertiary: hints, tallies, axis ticks. */
+  --fs-micro: 13px;
+  --fs-stat: 30px;
+  /* Identifiers. The mono face runs small beside the text one, so it gets a little back. */
+  --fs-ident: 14.5px;
+  --fs-index: 12px;
+
+  --lh-title: 1.06;
+  --lh-body: 1.5;
+  --tracking-title: -0.035em;
+
+  /* --- spacing: a 4px rhythm ------------------------------------------- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 72px;
+
+  /* --- radii ------------------------------------------------------------ */
+  --r-chip: 4px;
+  --r-sm: 6px;
+  --r-pill: 999px;
+  --r-card: 20px;
+}
+
+/*
+  Dark. Behind the attribute only — the operating system's preference does not switch the
+  interface, so a reader who wants dark asks for it and gets it everywhere.
+*/
+:root[data-theme='dark'] {
+  --bg: #121212;
+  --surface: #1a1a1a;
+  --surface-sunk: #202020;
+  --border: #2e2e2c;
+  --border-strong: #444340;
+  --text: #f2f1ee;
+  --text-muted: #aeaba3;
+  --text-faint: #86837c;
+
+  /* Lightened from the light-mode #2459E6, which fails against a near-black ground. */
+  --accent: #8ca9f5;
+  --accent-soft: #1a2440;
+
+  --stream-a1: #6f8fe8;
+  --stream-a2: #e3845e;
+  --stream-a1-bright: #8aa6ef;
+  --stream-a2-bright: #ea9876;
+
+  --stream-3: #7ab08b;
+  --stream-4: #a98ccd;
+
+  --ok: #5cc28c;
+  --warning-bg: #3a2f17;
+  --warning-text: #ecd199;
+  --error-bg: #3a211d;
+  --error-text: #eeab9e;
+  --chip-bg: #2a2a28;
+  --chip-text: #c9c7c1;
 }
 
 * { box-sizing: border-box; }
@@ -51,127 +136,388 @@ html, body, #app { height: 100%; }
 
 body {
   margin: 0;
-  background: var(--surface);
-  color: var(--ink);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--sans);
-  font-size: 14px;
-  line-height: 1.55;
-  -webkit-font-smoothing: antialiased;
+  font-size: var(--fs-body);
+  font-weight: 400;
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: auto;
+  text-rendering: optimizeLegibility;
 }
 
-h1, h2, h3, th, .eyebrow {
-  font-family: var(--cond);
-  letter-spacing: 0.01em;
+/* --- type -------------------------------------------------------------- */
+
+h1 {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: var(--tracking-title);
+  line-height: var(--lh-title);
+  margin: 0;
+  overflow-wrap: break-word;
 }
 
-h1 { font-size: 20px; margin: 0; font-weight: 700; }
-h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
-h3 { font-size: 13px; margin: 0 0 6px; font-weight: 600; }
+/* The muted second line of a page title: the same size and spacing, so the two read as
+   one two-tone sentence rather than a heading plus a caption. */
+.title-sub {
+  font-size: var(--fs-title);
+  font-weight: 500;
+  letter-spacing: var(--tracking-title);
+  line-height: var(--lh-title);
+  color: var(--text-muted);
+  margin: 0;
+  overflow-wrap: break-word;
+}
 
+h2 {
+  font-size: var(--fs-h2);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  margin: 0 0 var(--s3);
+}
+
+h3 {
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin: 0 0 var(--s2);
+}
+
+/* Section label. Sentence case, no tracking — a quiet line of text, not a stamp. */
 .eyebrow {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--ink-faint);
+  font-size: var(--fs-small);
+  color: var(--text-muted);
   font-weight: 600;
 }
 
 .num, code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* Identifiers: song ids, stream keys, file names. */
+code, .num { font-size: var(--fs-ident); }
 
-a { color: var(--accent); }
+a { color: var(--accent); text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 2px; }
+a:hover { text-decoration-color: currentColor; }
+
+/* --- controls ---------------------------------------------------------- */
 
 button, .btn {
   font: inherit;
-  font-family: var(--cond);
-  font-weight: 600;
-  font-size: 13px;
-  border: 1px solid var(--rule-strong);
-  background: var(--panel);
-  color: var(--ink);
-  border-radius: var(--r);
-  padding: 5px 11px;
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: var(--fs-small);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--r-pill);
+  padding: var(--s2) var(--s4);
   cursor: pointer;
   text-decoration: none;
   display: inline-block;
+  line-height: 1.3;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
-button:hover, .btn:hover { border-color: var(--accent); color: var(--accent); }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { background: #143b55; color: #fff; }
-button.danger:hover { border-color: var(--error); color: var(--error); }
+button:hover, .btn:hover { border-color: var(--text); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:disabled:hover { border-color: var(--border-strong); }
 
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* One per view. Black is the loudest thing on the page, so it marks the single action a
+   reader is most likely to want. */
+button.primary, .btn.primary {
+  background: var(--text);
+  border-color: var(--text);
+  /* The page's own background, so the label inverts with the button: a literal white here
+     disappears in dark, where the button itself is near-white. */
+  color: var(--bg);
+  font-weight: 600;
+}
+button.primary:hover, .btn.primary:hover { background: #000; border-color: #000; color: #fff; }
+:root[data-theme='dark'] button.primary:hover,
+:root[data-theme='dark'] .btn.primary:hover { background: #fff; border-color: #fff; color: #000; }
+button.danger:hover { border-color: var(--error-text); color: var(--error-text); }
+
+/* Grey, for a button that opens something rather than doing something. */
+button.quiet { background: var(--chip-bg); border-color: transparent; color: var(--text); }
+button.quiet:hover { border-color: var(--border-strong); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
+button:focus-visible, .btn:focus-visible { outline-offset: 2px; }
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 
 input, select, textarea {
   font: inherit;
   font-family: var(--sans);
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--r);
-  padding: 5px 8px;
-  background: var(--panel);
-  color: var(--ink);
+  font-size: var(--fs-cell);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  color: var(--text);
   max-width: 100%;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-input[type='number'], input.num { font-family: var(--mono); }
-label { font-size: 12px; color: var(--ink-muted); display: block; margin-bottom: 3px; }
+input:hover, select:hover, textarea:hover { border-color: var(--text-faint); }
+input[type='number'], input.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+input[type='file'] { padding: var(--s1) var(--s2); font-size: var(--fs-small); }
+textarea { line-height: var(--lh-body); }
 
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--rule);
-  border-radius: var(--r);
-  padding: 14px 16px;
+label {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-muted);
+  display: block;
+  margin-bottom: var(--s1);
 }
+
+/* --- sections ----------------------------------------------------------
+   A section is space and a hairline. Boxes are kept for the few places that genuinely
+   enclose something: the timeline card and the tables. */
+
+.section { padding-top: var(--s6); border-top: 1px solid var(--border); }
+.section:first-child { padding-top: 0; border-top: none; }
+
+.panel { background: transparent; border: none; padding: 0; }
+
+/* --- tables ------------------------------------------------------------ */
 
 table { width: 100%; border-collapse: collapse; }
+
 th {
   text-align: left;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--ink-faint);
+  font-size: var(--fs-small);
   font-weight: 600;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--rule-strong);
+  color: var(--text-muted);
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-strong);
   white-space: nowrap;
 }
-td { padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
-tbody tr:hover { background: var(--panel-sunk); }
 
+td {
+  padding: var(--s3);
+  font-size: var(--fs-cell);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--surface-sunk); }
+
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Figures that line up without taking the mono face: counts and measurements that read
+   as text, where monospace would make a column of prose out of them. */
+.tnum { font-variant-numeric: tabular-nums; }
+td.right, th.right { text-align: right; }
+
+.table-wrap {
+  overflow: auto;
+  max-height: 32rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.table-wrap table { min-width: 40rem; }
+.table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+  border-bottom: none;
+}
+
+/* --- metadata chips ----------------------------------------------------
+   Facts about an item: singer, language, sample rate, duration. Grey on grey, because a
+   fact carries no state and colour here would imply one. */
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s1);
+  font-size: var(--fs-small);
+  color: var(--chip-text);
+  background: var(--chip-bg);
+  border: none;
+  border-radius: var(--r-chip);
+  padding: 3px var(--s2);
+  white-space: nowrap;
+}
+.chip .chip-value {
+  color: var(--chip-text);
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- state -------------------------------------------------------------
+   A good state is quiet: green text and a check, no pill. A pill is reserved for the two
+   states that want a reader to stop. */
+
+.ok-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--ok);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.ok-state::before {
+  content: '';
+  width: 0.42em;
+  height: 0.72em;
+  border: solid currentColor;
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(42deg);
+  margin-top: -0.18em;
+  flex: none;
+}
+
+.pill {
+  display: inline-block;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  padding: 2px var(--s2);
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+.pill.warning { background: var(--warning-bg); color: var(--warning-text); }
+.pill.error { background: var(--error-bg); color: var(--error-text); }
+
+/* Neutral inline marker for a value that is neither a state nor a measurement. */
 .tag {
   display: inline-block;
   font-family: var(--mono);
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 2px;
-  border: 1px solid transparent;
+  font-size: var(--fs-small);
+  padding: 1px var(--s2);
+  border-radius: var(--r-chip);
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   white-space: nowrap;
 }
-.tag.error { background: var(--error-soft); color: var(--error); border-color: #e8c4bf; }
-.tag.warning { background: var(--warn-soft); color: var(--warn); border-color: #e8dcb8; }
-.tag.info { background: var(--panel-sunk); color: var(--ink-muted); border-color: var(--rule); }
-.tag.ok { background: var(--ok-soft); color: var(--ok); border-color: #c2ddd0; }
-.tag.accent { background: var(--accent-soft); color: var(--accent); border-color: #c3d8e3; }
+.tag.warning { background: var(--warning-bg); border-color: transparent; color: var(--warning-text); }
+.tag.error { background: var(--error-bg); border-color: transparent; color: var(--error-text); }
+.tag.accent { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 
-.muted { color: var(--ink-muted); }
-.faint { color: var(--ink-faint); }
-.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.stack { display: flex; flex-direction: column; gap: 14px; }
-.spread { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+/* --- severity badges: validator findings ------------------------------- */
 
-.note {
-  font-size: 12px;
-  color: var(--ink-muted);
-  border-left: 2px solid var(--rule-strong);
-  padding-left: 9px;
+.sev {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  padding: 1px var(--s2);
+  border-radius: var(--r-chip);
+  white-space: nowrap;
+}
+.sev::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.sev.error { background: var(--error-bg); color: var(--error-text); }
+.sev.warning { background: var(--warning-bg); color: var(--warning-text); }
+.sev.info { background: var(--surface-sunk); color: var(--text-muted); }
+
+/* --- comparison categories ---------------------------------------------
+   A different object from .sev on purpose: two annotators differing is a fact about the
+   pair, and a filled warning pill would read as a fault in one of them. */
+
+.cat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-small);
+  padding: 1px var(--s2) 1px var(--s1);
+  border-radius: var(--r-pill);
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  color: var(--text);
+  white-space: nowrap;
+}
+.cat::before {
+  content: '';
+  width: 3px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--text-faint);
+  flex: none;
+}
+.cat.pitch_only::before { background: var(--stream-4); }
+.cat.timing_only::before { background: var(--stream-3); }
+.cat.pitch_and_timing::before { background: var(--text-muted); }
+.cat.only_in_a::before { background: var(--stream-a1); }
+.cat.only_in_b::before { background: var(--stream-a2); }
+
+/* --- utilities --------------------------------------------------------- */
+
+.muted { color: var(--text-muted); }
+.faint { color: var(--text-faint); }
+.row { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; }
+.stack { display: flex; flex-direction: column; gap: var(--s6); }
+.spread { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s5); }
+
+/*
+  Below this width a title and the buttons beside it stop being a row. Sharing the line,
+  the title gets whatever space the buttons leave, which on a phone is one letter wide.
+*/
+@media (max-width: 640px) {
+  .spread { flex-direction: column; align-items: stretch; }
 }
 
+.note {
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+  max-width: 78ch;
+  margin: 0 0 var(--s3);
+}
+.note:last-child { margin-bottom: 0; }
+
 .error-box {
-  background: var(--error-soft);
-  border: 1px solid #e8c4bf;
-  color: var(--error);
-  padding: 8px 11px;
-  border-radius: var(--r);
-  font-size: 13px;
+  background: var(--error-bg);
+  color: var(--error-text);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-small);
+}
+
+/*
+  The error box's shape in the page's own colours. An action reporting what it did is
+  news, and red would read as a fault; the border is what a near-white fill needs to
+  still read as a box.
+*/
+.notice-box {
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-small);
+}
+.notice-box p { margin: 0; }
+.notice-box .notice-head { margin-top: var(--s3); font-weight: 600; }
+.notice-box ul {
+  margin: var(--s1) 0 0;
+  padding-left: var(--s5);
+  color: var(--text-muted);
+}
+
+/* The title scale is set for a wide column. On a phone it would take most of the first
+   screen, so it steps down while keeping its weight and tracking. */
+@media (max-width: 760px) {
+  :root { --fs-title: 29px; --fs-stat: 26px; }
+}
+@media (max-width: 420px) {
+  :root { --fs-title: 24px; --fs-h2: 18px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

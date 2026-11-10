@@ -4,7 +4,7 @@
 
 Django · Django REST Framework · PostgreSQL · Vue 3 · Docker Compose
 
-<!-- screenshot: docs/screenshots/item-view.png -->
+![Item view: two independent annotations of vocadito_21 compared](docs/screenshots/item-view.png)
 
 ## Overview
 

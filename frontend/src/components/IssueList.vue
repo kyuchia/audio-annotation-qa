@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { session } from '../session'
 
 const props = defineProps({
   issues: { type: Array, default: () => [] },
@@ -19,33 +20,38 @@ const label = { error: 'Error', warning: 'Warning', info: 'Info' }
   </div>
   <ul v-else class="issues">
     <li v-for="issue in sorted" :key="issue.id" :class="issue.severity">
-      <div class="head">
-        <span class="tag" :class="issue.severity">{{ label[issue.severity] }}</span>
-        <code>{{ issue.code }}</code>
-        <span v-if="showTarget && issue.item_song_id" class="faint num">{{ issue.item_song_id }}</span>
-        <span v-if="issue.layer_label" class="faint num">{{ issue.layer_label }}</span>
-        <button
-          v-if="!issue.acknowledged && issue.severity !== 'info'"
-          class="ack"
-          @click="emit('acknowledge', issue)"
-        >
-          Mark as seen
-        </button>
-      </div>
-      <p>{{ issue.message }}</p>
+      <span class="sev" :class="issue.severity">{{ label[issue.severity] }}</span>
+      <span class="msg">{{ issue.message }}</span>
+      <code class="code">{{ issue.code }}</code>
+      <span v-if="showTarget && issue.item_song_id" class="faint num">{{ issue.item_song_id }}</span>
+      <span v-if="issue.layer_label" class="faint num">{{ issue.layer_label }}</span>
+      <button
+        v-if="session.authenticated && !issue.acknowledged && issue.severity !== 'info'"
+        class="ack"
+        @click="emit('acknowledge', issue)"
+      >
+        Mark as seen
+      </button>
     </li>
   </ul>
 </template>
 
 <style scoped>
+/* A finding is a line: its severity, then what it says. */
 .issues { list-style: none; margin: 0; padding: 0; }
-.issues li { padding: 9px 0 9px 11px; border-left: 2px solid var(--rule); border-bottom: 1px solid var(--rule); }
-.issues li.error { border-left-color: var(--error); }
-.issues li.warning { border-left-color: var(--warn); }
-.issues li:last-child { border-bottom: none; }
-.head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
-.head code { font-size: 11px; color: var(--ink-muted); }
-p { margin: 4px 0 0; font-size: 13px; }
-.ack { margin-left: auto; padding: 2px 8px; font-size: 11px; }
-.empty { font-size: 13px; color: var(--ink-muted); padding: 10px 0; }
+.issues li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--border);
+}
+.issues li:last-child { border-bottom: none; padding-bottom: 0; }
+.sev { flex: none; }
+.msg { flex: 1 1 24rem; min-width: 0; font-size: var(--fs-cell); }
+.code { font-size: var(--fs-micro); color: var(--text-muted); white-space: nowrap; }
+.ack { margin-left: auto; padding: 2px var(--s3); height: 1.75rem; }
+.empty { font-size: var(--fs-cell); color: var(--text-muted); padding: var(--s3) 0; max-width: 78ch; }
+@media (max-width: 640px) { .ack { margin-left: 0; } }
 </style>
