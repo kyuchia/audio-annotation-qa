@@ -31,7 +31,7 @@ state no terms of their own, so nothing in the distribution contradicts the reco
 
 ## What is included here
 
-Five of the dataset's forty excerpts, chosen because their two independent note annotations
+Five of the dataset's forty excerpts, chosen because their two separate note annotations
 disagree in different ways:
 
 | Excerpt | Files |

@@ -34,7 +34,7 @@ with the evidence behind them.
 ## Demo data
 
 The demo corpus is a five-excerpt subset of **vocadito**: short solo singing recordings,
-mono, 44.1 kHz. Every excerpt carries **two note annotations, A1 and A2, made independently
+mono, 44.1 kHz. Every excerpt carries **two note annotations, A1 and A2, made separately
 by two annotators**. See [`demo-data/vocadito/ATTRIBUTION.md`](../demo-data/vocadito/ATTRIBUTION.md)
 for the dataset's authors, licence and citation.
 
@@ -269,7 +269,7 @@ Copy `.env.example` to `.env` and edit. Everything is read from the environment.
 |---|---|---|
 | `DATASET_ROOT` | `./demo-data` | Host directory mounted read-only at `/data`. A corpus's `root_path` is a path beneath it |
 | `RECORDING_ROOT` | `./recordings` | Host directory mounted read-only at `/recordings`, for a corpus whose annotations were made against audio not shipped beside them |
-| `DJANGO_SECRET_KEY` | a development placeholder | **Change this for any non-local installation.** It signs sessions and password-reset tokens |
+| `DJANGO_SECRET_KEY` | a development placeholder, accepted only while `DJANGO_DEBUG` is on | **Change this for any non-local installation.** With `DJANGO_DEBUG` off the app refuses to start without its own key. It signs sessions and password-reset tokens |
 | `DJANGO_DEBUG` | `0` | Off unless set to `1`; with it on, error responses expose tracebacks and settings. `docker-compose.yml` defaults it to `1` for local development, and `.env` overrides that |
 | `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated hostnames this installation answers to. Avoid `*` |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` / `_HOST` / `_PORT` | `annotations` / `annotations` / `annotations` / `db` / `5432` | Database connection |

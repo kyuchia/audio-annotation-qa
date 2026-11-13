@@ -352,7 +352,7 @@ def _ingest_notes(
                 "annotator_role": "independent",
                 "parallel_annotators": list(ANNOTATORS),
                 "independence_note": (
-                    f"{' and '.join(ANNOTATORS)} annotated this excerpt independently. "
+                    f"{' and '.join(ANNOTATORS)} annotated this excerpt separately. "
                     f"Neither revises the other: they are parallel layers, each version 1 "
                     f"with no parent, and a disagreement between them is annotator "
                     f"disagreement rather than an error by either one."

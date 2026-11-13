@@ -22,7 +22,7 @@ for annotations created in tools such as Tony and Sonic Visualiser.
 ## Demo
 
 The demo data is five excerpts from the [vocadito](demo-data/vocadito/ATTRIBUTION.md)
-singing dataset, each annotated independently by two annotators.
+singing dataset, each with note annotations from two annotators.
 
 In `vocadito_21`, A1 marked 97 notes and A2 marked 62, with 57 matched pairs. Of A1's 40
 unmatched notes, 18 begin inside an A2 note, consistent with A1 splitting notes that A2
@@ -61,7 +61,7 @@ corpus.
 
 ## Status
 
-Runs locally under Docker Compose; not yet deployed. Any signed-in user can edit and
+Runs locally under Docker Compose; not yet deployed. Any signed-in user can upload, validate, compare and
 review, and there are no role-based permissions yet. See [docs/DESIGN.md](docs/DESIGN.md)
 for architecture, validation rules, comparison methods, configuration, and known
 limitations.
