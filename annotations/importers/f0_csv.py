@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -169,8 +170,21 @@ def parse_f0_csv(
                 result.skipped_lines.append((lineno, ",".join(raw)))
             continue
 
-        numeric_rows += 1
         got = dict(zip(column_map.keys(), values))
+        # float() reads "nan" and "inf" as numbers. Neither is a time or a pitch, every
+        # comparison against one is false so the contract checks below let it through, and
+        # a stored one cannot be written out as JSON again. One is enough to refuse the
+        # file: a row count threshold is for values that are implausible, and these are
+        # impossible.
+        for name, value in got.items():
+            if not math.isfinite(value):
+                raise F0ParseError(
+                    f"line {lineno}: the {name} column holds "
+                    f"{cells[column_map[name]]!r}. Every time and pitch in an annotation "
+                    f"file must be a finite number."
+                )
+
+        numeric_rows += 1
         # Kept unmapped so that, if this contract is refused, the first three columns can be
         # tried against the other registered contracts to name the one that does fit.
         try:

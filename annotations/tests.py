@@ -2051,3 +2051,840 @@ class DemoImportComparisonTests(TestCase):
             LayerComparison.objects.filter(layer_a=a, params=NOTE_PITCH_DEFAULTS).count(), 1
         )
 
+
+
+# ---------------------------------------------------------------------------
+# Dev-server proxy under Docker Compose
+# ---------------------------------------------------------------------------
+
+
+class ComposeProxyTargetTests(TestCase):
+    """
+    The in-app "Sign in" and "Admin" links are served through the Vite proxy. Inside the
+    frontend container localhost is that container, so Compose has to name the django
+    service, and outside Compose the proxy keeps its localhost default.
+    """
+
+    def test_compose_points_the_proxy_at_the_django_service(self):
+        compose = (Path(settings.BASE_DIR) / "docker-compose.yml").read_text()
+        frontend = compose.split("\n  frontend:\n", 1)[1]
+        self.assertIn("VITE_API_TARGET: http://django:8000", frontend)
+
+    def test_the_proxy_defaults_to_localhost_and_keeps_the_readers_host(self):
+        config = (Path(settings.BASE_DIR) / "frontend" / "vite.config.js").read_text()
+        self.assertIn("process.env.VITE_API_TARGET || 'http://localhost:8000'", config)
+        # Django answers to the host the reader typed; "django:8000" is outside its list.
+        self.assertNotIn("changeOrigin: true", config)
+        for prefix in ("'/api'", "'/admin'", "'/static'"):
+            self.assertIn(prefix, config)
+
+
+# ---------------------------------------------------------------------------
+# Non-finite numbers are refused wherever a number enters
+# ---------------------------------------------------------------------------
+
+
+class NonFiniteNumberTests(Fixtures):
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_user("reviewer", password="irrelevant")
+        self.client.force_authenticate(self.user)
+
+    def test_the_parser_refuses_nan_and_names_the_row(self):
+        for bad in ("nan", "inf", "-inf", "NaN", "Infinity"):
+            with self.subTest(bad=bad):
+                text = f"1.0,440.0,0.5\n{bad},440.0,0.5\n3.0,440.0,0.5\n"
+                with self.assertRaises(F0ParseError) as ctx:
+                    parse_f0_csv(text, contract="onset_hz_duration")
+                self.assertIn("line 2", str(ctx.exception))
+                self.assertIn("onset", str(ctx.exception))
+
+    def test_the_parser_refuses_a_non_finite_duration_offset_and_pitch(self):
+        cases = (
+            ("1.0,440.0,nan\n", "onset_hz_duration", "duration"),
+            ("1.0,inf,440.0\n", "onset_offset_hz", "offset"),
+            ("1.0,1.5,nan\n", "onset_offset_hz", "hz"),
+        )
+        for text, contract, name in cases:
+            with self.subTest(column=name):
+                with self.assertRaises(F0ParseError) as ctx:
+                    parse_f0_csv(text, contract=contract)
+                self.assertIn("line 1", str(ctx.exception))
+                self.assertIn(name, str(ctx.exception))
+
+    def test_an_upload_holding_nan_is_a_400_and_stores_nothing(self):
+        before = AnnotationLayer.objects.count()
+        upload = SimpleUploadedFile("notes.csv", b"1.0,440.0,0.5\n2.0,440.0,nan\n")
+        r = self.client.post(
+            f"/api/items/{self.item.pk}/upload-annotation/",
+            {"file": upload, "stream_key": "A3", "column_contract": "onset_hz_duration"},
+            format="multipart",
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("line 2", r.data["detail"])
+        self.assertEqual(AnnotationLayer.objects.count(), before)
+        self.assertEqual(self.client.get(f"/api/items/{self.item.pk}/").status_code, 200)
+
+    def test_an_upload_with_a_non_finite_tuning_reference_is_a_400(self):
+        for bad in ("nan", "inf"):
+            with self.subTest(bad=bad):
+                upload = SimpleUploadedFile("notes.csv", b"1.0,440.0,0.5\n")
+                r = self.client.post(
+                    f"/api/items/{self.item.pk}/upload-annotation/",
+                    {
+                        "file": upload,
+                        "stream_key": "A3",
+                        "column_contract": "onset_hz_duration",
+                        "tuning_reference_hz": bad,
+                    },
+                    format="multipart",
+                )
+                self.assertEqual(r.status_code, 400)
+        self.assertFalse(AnnotationLayer.objects.filter(stream_key="A3").exists())
+
+    def test_rows_holding_non_finite_values_are_refused_at_the_import_funnel(self):
+        for field, value in (("start_sec", math.nan), ("end_sec", math.inf)):
+            with self.subTest(field=field):
+                rows = self.rows([(1.0, 0.5, A4)])
+                rows[0][field] = value
+                with self.assertRaises(IngestError) as ctx:
+                    self.make_layer(rows, stream="A3")
+                self.assertIn("row 0", str(ctx.exception))
+        rows = self.rows([(1.0, 0.5, A4)])
+        rows[0]["payload"]["hz"] = math.nan
+        with self.assertRaises(IngestError):
+            self.make_layer(rows, stream="A3")
+
+    def test_layer_params_refuse_a_non_finite_number(self):
+        spec = get_layer_type("note_pitch")
+        self.assertTrue(spec.validate_params({"tuning_reference_hz": math.nan}))
+        self.assertTrue(spec.validate_params({"tuning_reference_hz": math.inf}))
+        self.assertEqual(spec.validate_params({"tuning_reference_hz": 442.0}), [])
+
+    def test_a_non_finite_comparison_tolerance_is_a_400(self):
+        a = self.make_layer(self.scale_rows(n=3), stream="A1")
+        b = self.make_layer(self.scale_rows(n=3), stream="A2")
+        # 1e999 is valid JSON and reads as infinity.
+        body = '{"layer_a": %d, "layer_b": %d, "params": {"onset_tolerance_sec": 1e999}}' % (
+            a.pk, b.pk,
+        )
+        r = self.client.post("/api/comparisons/", body, content_type="application/json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("finite number", r.data["params"][0])
+        self.assertEqual(LayerComparison.objects.count(), 0)
+        from .params import ParamError, comparator_params
+        from .registry import comparator_for
+
+        with self.assertRaises(ParamError) as ctx:
+            comparator_params({"onset_tolerance_sec": math.inf}, comparator_for("note_pitch"))
+        self.assertIn("onset_tolerance_sec", str(ctx.exception))
+
+    def test_a_non_finite_validator_threshold_is_a_400(self):
+        layer = self.make_layer(self.scale_rows(n=3))
+        body = '{"params": {"coverage_gap_sec": 1e999}}'
+        for url in (
+            f"/api/layers/{layer.pk}/validate/",
+            f"/api/items/{self.item.pk}/validate/",
+            f"/api/corpora/{self.corpus.pk}/validate/",
+        ):
+            with self.subTest(url=url):
+                r = self.client.post(url, body, content_type="application/json")
+                self.assertEqual(r.status_code, 400)
+                self.assertIn("coverage_gap_sec", r.data["params"][0])
+
+
+# ---------------------------------------------------------------------------
+# Admin: stored data is escaped wherever it is rendered as HTML
+# ---------------------------------------------------------------------------
+
+
+class AdminEscapingTests(Fixtures):
+    PAYLOAD = "<script>alert(1)</script>"
+
+    def test_the_raw_metadata_row_is_escaped(self):
+        self.item.metadata_row = {f"key{self.PAYLOAD}": f"value{self.PAYLOAD}", "singer": "A & B"}
+        html = str(ItemAdmin(Item, admin.site).metadata_row_pretty(self.item))
+        self.assertNotIn("<script>", html)
+        self.assertEqual(html.count("&lt;script&gt;alert(1)&lt;/script&gt;"), 2)
+        self.assertIn("A &amp; B", html)
+        # Still the table it was.
+        self.assertTrue(html.startswith("<table>"))
+        self.assertEqual(html.count("<tr>"), 2)
+
+    def test_the_lineage_is_escaped(self):
+        v1 = self.make_layer(self.scale_rows(n=2))
+        v2 = self.make_layer(self.scale_rows(n=2))
+        # A value outside the declared choices is displayed as stored.
+        AnnotationLayer.objects.filter(pk__in=[v1.pk, v2.pk]).update(author_kind="<b>x</b>")
+        v2.refresh_from_db()
+        html = str(AnnotationLayerAdmin(AnnotationLayer, admin.site).lineage_view(v2))
+        self.assertNotIn("<b>x</b>", html)
+        self.assertEqual(html.count("&lt;b&gt;x&lt;/b&gt;"), 2)
+        self.assertIn(f'<a href="/admin/annotations/annotationlayer/{v1.pk}/change/">', html)
+        self.assertIn(" -&gt; <b>v2 (", html)
+
+
+# ---------------------------------------------------------------------------
+# Correction params are checked when the correction is created
+# ---------------------------------------------------------------------------
+
+
+class CorrectionParamTests(Fixtures):
+    """
+    A correction is applied every time its layer is read, so params the overlay cannot
+    apply would fail every read of that layer: its segments, its export, its validation and
+    any comparison it takes part in. They are refused at the door instead.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.layer = self.make_layer(self.scale_rows(n=4))
+        self.client = APIClient()
+        self.client.force_authenticate(
+            get_user_model().objects.create_user("reviewer", password="irrelevant")
+        )
+
+    def post(self, kind, params):
+        return self.client.post(
+            "/api/corrections/",
+            {"layer": self.layer.pk, "kind": kind, "params": params, "reason": "Testing."},
+            format="json",
+        )
+
+    def test_bad_params_are_a_400_and_the_layer_stays_readable(self):
+        from .models import LayerCorrection
+
+        bad = (
+            ("octave_shift", {"octaves": "one"}),
+            ("octave_shift", {"octaves": True}),
+            ("octave_shift", {}),
+            ("octave_shift", {"octaves": 5000}),
+            ("octave_shift", {"octave": 1}),
+            ("octave_shift", {"octaves": 1, "indices": "0,1"}),
+            ("octave_shift", {"octaves": 1, "indices": [[0]]}),
+            ("cents_shift", {"cents": None}),
+            ("cents_shift", {"cents": 1e9}),
+            ("time_offset", {"seconds": "0.5"}),
+            ("time_offset", {}),
+            ("drop_segments", {"indices": 3}),
+            ("drop_segments", {"indices": [1.5]}),
+            ("drop_segments", {}),
+            ("trim_tail", {"after_sec": "end"}),
+            ("trim_tail", {"after_sec": -1}),
+            ("trim_tail", {}),
+            ("octave_shift", [1]),
+            ("octave_shift", "1"),
+        )
+        for kind, params in bad:
+            with self.subTest(kind=kind, params=params):
+                r = self.post(kind, params)
+                self.assertEqual(r.status_code, 400, r.data)
+                self.assertIn("params", r.data)
+                self.assertIn(kind, str(r.data["params"][0]))
+        self.assertEqual(LayerCorrection.objects.count(), 0)
+        r = self.client.get(f"/api/layers/{self.layer.pk}/segments/?resolved=true")
+        self.assertEqual(r.status_code, 200)
+
+    def test_good_params_are_accepted_and_applied(self):
+        good = (
+            ("octave_shift", {"octaves": 1}),
+            ("octave_shift", {"octaves": -2, "indices": [0, 1]}),
+            ("cents_shift", {"cents": -50.0}),
+            ("time_offset", {"seconds": 0.25}),
+            ("drop_segments", {"indices": [3]}),
+            ("trim_tail", {"after_sec": 3.2}),
+        )
+        for kind, params in good:
+            with self.subTest(kind=kind):
+                self.assertEqual(self.post(kind, params).status_code, 201)
+        r = self.client.get(f"/api/layers/{self.layer.pk}/segments/?resolved=true")
+        self.assertEqual(r.status_code, 200)
+        # Onsets 1.25, 2.25 and 3.25 once shifted and with index 3 dropped; the last of
+        # those starts after the 3.2 s trim.
+        self.assertEqual([row["index"] for row in r.data], [0, 1])
+
+    def test_an_edit_is_checked_against_the_stored_kind(self):
+        created = self.post("octave_shift", {"octaves": 1})
+        url = f"/api/corrections/{created.data['id']}/"
+        r = self.client.patch(url, {"params": {"seconds": 1}}, format="json")
+        self.assertEqual(r.status_code, 400)
+        r = self.client.patch(url, {"kind": "time_offset"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        r = self.client.patch(url, {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, 200)
+
+    def test_the_admin_form_path_runs_the_same_check(self):
+        from django.core.exceptions import ValidationError
+        from .models import LayerCorrection
+
+        correction = LayerCorrection(
+            layer=self.layer, kind="octave_shift", params={"octaves": "one"}, reason="Testing."
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            correction.full_clean()
+        self.assertIn("params", ctx.exception.message_dict)
+        correction.params = {"octaves": 1}
+        correction.full_clean()
+
+
+# ---------------------------------------------------------------------------
+# Query parameters: a value the filter cannot use is the caller's error
+# ---------------------------------------------------------------------------
+
+
+class QueryParamTests(Fixtures):
+    """Every one of these is asked by a visitor with no session, as the reads allow."""
+
+    def setUp(self):
+        super().setUp()
+        self.layer = self.make_layer(self.scale_rows(n=3))
+        self.run = run_for_layer(self.layer)
+        self.client = APIClient()
+
+    def test_an_id_filter_given_something_else_is_a_400_naming_the_parameter(self):
+        cases = (
+            ("/api/layers/", "item"),
+            ("/api/segments/", "layer"),
+            ("/api/corrections/", "layer"),
+            ("/api/validation-issues/", "run"),
+            ("/api/validation-issues/", "item"),
+            ("/api/validation-issues/", "layer"),
+        )
+        for url, name in cases:
+            for bad in ("abc", "1.5", "-1", "²", "1;2"):
+                with self.subTest(url=url, name=name, bad=bad):
+                    r = self.client.get(url, {name: bad})
+                    self.assertEqual(r.status_code, 400)
+                    self.assertIn(name, r.data)
+                    self.assertIn("whole number", r.data[name][0])
+
+    def test_an_id_filter_given_an_id_still_filters(self):
+        self.assertEqual(self.client.get("/api/layers/", {"item": self.item.pk}).data["count"], 1)
+        self.assertEqual(self.client.get("/api/layers/", {"item": 987654}).data["count"], 0)
+        self.assertEqual(self.client.get("/api/segments/", {"layer": self.layer.pk}).data["count"], 3)
+        self.assertEqual(self.client.get("/api/corrections/", {"layer": self.layer.pk}).status_code, 200)
+        r = self.client.get("/api/validation-issues/", {"run": self.run.pk, "layer": self.layer.pk})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["count"], self.run.issues.count())
+
+    def test_a_text_filter_holding_a_nul_character_is_a_400(self):
+        cases = (
+            ("/api/items/", "q"),
+            ("/api/items/", "corpus"),
+            ("/api/layers/", "layer_type"),
+            ("/api/layers/", "stream_key"),
+            ("/api/layers/", "status"),
+            ("/api/validation-issues/", "severity"),
+            ("/api/validation-issues/", "code"),
+            (f"/api/validation-runs/{self.run.pk}/issues/", "severity"),
+        )
+        for url, name in cases:
+            with self.subTest(url=url, name=name):
+                r = self.client.get(url, {name: "a\x00b"})
+                self.assertEqual(r.status_code, 400)
+                self.assertIn(name, r.data)
+
+    def test_the_corpus_filter_takes_a_slug_or_an_id(self):
+        for value in (self.corpus.slug, str(self.corpus.pk)):
+            self.assertEqual(self.client.get("/api/items/", {"corpus": value}).data["count"], 1)
+        # A digit outside ASCII is a slug that matches nothing, where it used to be a 500.
+        r = self.client.get("/api/items/", {"corpus": "²"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["count"], 0)
+
+    def test_the_session_export_refuses_a_layer_list_it_cannot_read(self):
+        url = f"/api/items/{self.item.pk}/export-session/"
+        for bad in ("abc", "²", "1,,x"):
+            with self.subTest(bad=bad):
+                r = self.client.get(url, {"layers": bad})
+                self.assertEqual(r.status_code, 400)
+                self.assertIn("layers", r.data)
+        self.assertEqual(self.client.get(url, {"layers": f"{self.layer.pk}, "}).status_code, 200)
+
+    def test_a_comparison_filter_that_is_no_id_still_matches_nothing(self):
+        for name in ("item", "layer"):
+            for bad in ("all", "²"):
+                with self.subTest(name=name, bad=bad):
+                    r = self.client.get("/api/comparisons/", {name: bad})
+                    self.assertEqual(r.status_code, 200)
+                    self.assertEqual(r.data["count"], 0)
+
+
+# ---------------------------------------------------------------------------
+# A layer's status and its review record agree, whichever door a review comes through
+# ---------------------------------------------------------------------------
+
+
+class ReviewStatusAgreementTests(Fixtures):
+    def setUp(self):
+        super().setUp()
+        self.layer = self.make_layer(self.scale_rows(n=3))
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_user("reviewer", password="irrelevant")
+        self.client.force_authenticate(self.user)
+
+    def status(self):
+        self.layer.refresh_from_db()
+        return self.layer.status
+
+    def review(self, decision, **extra):
+        return self.client.post(
+            f"/api/layers/{self.layer.pk}/reviews/", {"decision": decision, **extra}, format="json"
+        )
+
+    def test_a_review_posted_to_the_reviews_endpoint_moves_the_status_too(self):
+        r = self.client.post(
+            "/api/reviews/", {"layer": self.layer.pk, "decision": "reject"}, format="json"
+        )
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(self.status(), AnnotationLayer.Status.REJECTED)
+
+    def test_a_review_created_outside_the_api_moves_the_status_too(self):
+        from .models import ReviewRecord
+
+        ReviewRecord.objects.create(layer=self.layer, decision="request_changes")
+        self.assertEqual(self.status(), AnnotationLayer.Status.CHANGES_REQUESTED)
+
+    def test_the_review_and_the_status_are_written_together_or_neither_is(self):
+        from unittest import mock
+        from .models import ReviewRecord
+
+        with mock.patch.object(
+            AnnotationLayer, "sync_status_with_reviews", side_effect=RuntimeError("status write failed")
+        ):
+            with self.assertRaises(RuntimeError):
+                self.review("accept")
+        self.assertEqual(ReviewRecord.objects.count(), 0)
+        self.assertEqual(self.status(), AnnotationLayer.Status.SUBMITTED)
+
+    def test_editing_the_latest_decision_moves_the_status(self):
+        created = self.review("accept")
+        r = self.client.patch(
+            f"/api/reviews/{created.data['id']}/", {"decision": "reject"}, format="json"
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.status(), AnnotationLayer.Status.REJECTED)
+
+    def test_a_review_stays_with_its_layer(self):
+        other = self.make_layer(self.scale_rows(n=3), stream="A2")
+        created = self.review("accept")
+        r = self.client.patch(
+            f"/api/reviews/{created.data['id']}/", {"layer": other.pk}, format="json"
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("layer", r.data)
+        other.refresh_from_db()
+        self.assertEqual(other.status, AnnotationLayer.Status.SUBMITTED)
+        self.assertEqual(self.status(), AnnotationLayer.Status.ACCEPTED)
+
+    def test_deleting_a_review_returns_the_status_to_what_the_remaining_reviews_say(self):
+        first = self.review("request_changes")
+        second = self.review("accept")
+        self.assertEqual(self.status(), AnnotationLayer.Status.ACCEPTED)
+
+        self.assertEqual(self.client.delete(f"/api/reviews/{second.data['id']}/").status_code, 204)
+        self.assertEqual(self.status(), AnnotationLayer.Status.CHANGES_REQUESTED)
+
+        self.assertEqual(self.client.delete(f"/api/reviews/{first.data['id']}/").status_code, 204)
+        # With no review left the layer is awaiting one, as it was when it was imported.
+        self.assertEqual(self.status(), AnnotationLayer.Status.SUBMITTED)
+
+    def test_the_admin_bulk_delete_keeps_the_status_in_step(self):
+        from .admin import ReviewRecordAdmin
+        from .models import ReviewRecord
+
+        self.review("accept")
+        ReviewRecordAdmin(ReviewRecord, admin.site).delete_queryset(None, ReviewRecord.objects.all())
+        self.assertEqual(ReviewRecord.objects.count(), 0)
+        self.assertEqual(self.status(), AnnotationLayer.Status.SUBMITTED)
+
+    def test_a_review_outcome_cannot_be_written_as_a_status_on_its_own(self):
+        r = self.client.patch(
+            f"/api/layers/{self.layer.pk}/", {"status": "accepted"}, format="json"
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("status", r.data)
+        self.assertEqual(self.status(), AnnotationLayer.Status.SUBMITTED)
+
+        self.review("reject")
+        r = self.client.patch(
+            f"/api/layers/{self.layer.pk}/", {"status": "accepted"}, format="json"
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.status(), AnnotationLayer.Status.REJECTED)
+
+    def test_a_workflow_status_can_still_be_set(self):
+        r = self.client.patch(
+            f"/api/layers/{self.layer.pk}/", {"status": "under_review"}, format="json"
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.status(), AnnotationLayer.Status.UNDER_REVIEW)
+
+    def test_the_admin_form_path_refuses_an_outcome_with_no_review_behind_it(self):
+        from django.core.exceptions import ValidationError
+
+        self.layer.status = AnnotationLayer.Status.ACCEPTED
+        with self.assertRaises(ValidationError) as ctx:
+            self.layer.clean()
+        self.assertIn("status", ctx.exception.message_dict)
+
+    def test_two_reviews_in_the_same_instant_are_ordered_by_arrival(self):
+        from .models import ReviewRecord
+
+        first = ReviewRecord.objects.create(layer=self.layer, decision="accept")
+        second = ReviewRecord.objects.create(layer=self.layer, decision="reject")
+        ReviewRecord.objects.filter(pk=second.pk).update(created_at=first.created_at)
+        self.assertEqual(self.layer.latest_review().pk, second.pk)
+
+
+# ---------------------------------------------------------------------------
+# A finding with no layer has no layer label
+# ---------------------------------------------------------------------------
+
+
+class IssueLayerLabelTests(Fixtures):
+    def test_an_item_level_finding_has_no_layer_label(self):
+        from .models import ValidationIssue, ValidationRun
+        from .serializers import ValidationIssueSerializer
+
+        layer = self.make_layer(self.scale_rows(n=3))
+        run = ValidationRun.objects.create(scope="item", item=self.item)
+        on_item = ValidationIssue.objects.create(
+            run=run, code="x", severity="info", message="About the item.", item=self.item
+        )
+        on_layer = ValidationIssue.objects.create(
+            run=run, code="y", severity="info", message="About the layer.", layer=layer
+        )
+        on_corpus = ValidationIssue.objects.create(
+            run=run, code="z", severity="info", message="About the corpus.", corpus=self.corpus
+        )
+
+        self.assertIsNone(ValidationIssueSerializer(on_item).data["layer_label"])
+        self.assertIsNone(ValidationIssueSerializer(on_corpus).data["layer_label"])
+        self.assertEqual(ValidationIssueSerializer(on_item).data["item_song_id"], "item_one")
+        self.assertEqual(
+            ValidationIssueSerializer(on_layer).data["layer_label"], "item_one:note_pitch/A1 v1"
+        )
+
+        r = APIClient().get(f"/api/items/{self.item.pk}/issues/")
+        self.assertEqual(r.status_code, 200)
+        labels = {row["code"]: row["layer_label"] for row in r.data}
+        self.assertEqual(labels, {"x": None, "y": "item_one:note_pitch/A1 v1"})
+
+
+# ---------------------------------------------------------------------------
+# Stored segments are read-only through the API
+# ---------------------------------------------------------------------------
+
+
+class SegmentEndpointReadOnlyTests(Fixtures):
+    """
+    Stored annotation data is never modified in place: a change arrives as a new layer
+    version or as a correction. Nothing in the app or the importers writes through
+    /api/segments/, so the endpoint serves reads only.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.layer = self.make_layer(self.scale_rows(n=3))
+        self.segment = self.layer.segments.get(index=0)
+        self.client = APIClient()
+        self.client.force_authenticate(
+            get_user_model().objects.create_user("reviewer", password="irrelevant")
+        )
+
+    def stored(self):
+        return list(self.layer.segments.values_list("index", "start_sec", "end_sec", "payload"))
+
+    def test_every_write_is_refused_and_the_rows_stay_as_imported(self):
+        before = self.stored()
+        url = f"/api/segments/{self.segment.pk}/"
+        body = {"index": 0, "start_sec": 9.0, "end_sec": 9.5, "payload": {"hz": 100.0}}
+        attempts = (
+            self.client.patch(url, {"end_sec": 0.5}, format="json"),
+            self.client.patch(url, {"payload": {"hz": 100.0}}, format="json"),
+            self.client.put(url, body, format="json"),
+            self.client.delete(url),
+            self.client.post("/api/segments/", {**body, "index": 7}, format="json"),
+        )
+        for r in attempts:
+            self.assertEqual(r.status_code, 405)
+        self.assertEqual(self.stored(), before)
+
+    def test_reads_are_unchanged(self):
+        anonymous = APIClient()
+        r = anonymous.get("/api/segments/", {"layer": self.layer.pk})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["count"], 3)
+        r = anonymous.get(f"/api/segments/{self.segment.pk}/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["payload"], {"hz": A4})
+        self.assertEqual(anonymous.get(f"/api/layers/{self.layer.pk}/segments/").data["count"], 3)
+
+
+# ---------------------------------------------------------------------------
+# The model's layer constraints hold on the API path
+# ---------------------------------------------------------------------------
+
+
+class LayerConstraintApiTests(Fixtures):
+    """
+    AnnotationLayer.clean() states what a parent may be: a layer of the same item, type and
+    stream, at a lower version. A ModelForm calls it; the API and the import funnel call it
+    too, so the rule holds wherever a layer is written.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.other_item = self.make_item("item_two")
+        self.elsewhere = self.make_layer(self.scale_rows(n=3), item=self.other_item)
+        self.here = self.make_layer(self.scale_rows(n=3))
+        self.client = APIClient()
+        self.client.force_authenticate(
+            get_user_model().objects.create_user("reviewer", password="irrelevant")
+        )
+
+    def upload(self, **extra):
+        return self.client.post(
+            f"/api/items/{self.item.pk}/upload-annotation/",
+            {
+                "file": SimpleUploadedFile("notes.csv", b"1.0,440.0,0.5\n2.0,440.0,0.5\n"),
+                "stream_key": "A1",
+                "column_contract": "onset_hz_duration",
+                **extra,
+            },
+            format="multipart",
+        )
+
+    def test_an_upload_naming_a_parent_from_another_item_is_a_400(self):
+        layers, segments = AnnotationLayer.objects.count(), Segment.objects.count()
+        r = self.upload(parent=self.elsewhere.pk)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("same item", r.data["detail"])
+        self.assertEqual(AnnotationLayer.objects.count(), layers)
+        self.assertEqual(Segment.objects.count(), segments)
+
+    def test_an_upload_naming_a_parent_from_another_stream_is_a_400(self):
+        a2 = self.make_layer(self.scale_rows(n=3), stream="A2")
+        r = self.upload(parent=a2.pk)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("same type and stream", r.data["detail"])
+
+    def test_an_upload_naming_its_own_earlier_version_is_accepted(self):
+        r = self.upload(parent=self.here.pk)
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.data["layer"]["parent"], self.here.pk)
+        self.assertEqual(r.data["layer"]["version"], 2)
+
+    def test_the_import_funnel_refuses_the_parent_for_every_caller(self):
+        with self.assertRaises(IngestError):
+            self.make_layer(self.scale_rows(n=2), parent=self.elsewhere)
+
+    def test_creating_a_layer_with_a_parent_from_another_item_is_a_400(self):
+        r = self.client.post(
+            "/api/layers/",
+            {
+                "item": self.item.pk, "layer_type": "note_pitch", "stream_key": "A1",
+                "version": 2, "parent": self.elsewhere.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("parent", r.data)
+        self.assertEqual(AnnotationLayer.objects.filter(item=self.item).count(), 1)
+
+    def test_editing_a_layer_onto_a_parent_from_another_item_is_a_400(self):
+        r = self.client.patch(
+            f"/api/layers/{self.here.pk}/", {"parent": self.elsewhere.pk}, format="json"
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("parent", r.data)
+        self.here.refresh_from_db()
+        self.assertIsNone(self.here.parent_id)
+
+    def test_a_version_at_or_below_its_parents_is_a_400(self):
+        r = self.client.post(
+            "/api/layers/",
+            {
+                "item": self.item.pk, "layer_type": "note_pitch", "stream_key": "A1",
+                "version": 1, "parent": self.here.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_well_formed_layer_is_still_created_and_edited(self):
+        r = self.client.post(
+            "/api/layers/",
+            {
+                "item": self.item.pk, "layer_type": "note_pitch", "stream_key": "A1",
+                "version": 2, "parent": self.here.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        r = self.client.patch(
+            f"/api/layers/{r.data['id']}/", {"derivation_kind": "midi"}, format="json"
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+
+
+# ---------------------------------------------------------------------------
+# Settings: the public placeholder key serves local development only
+# ---------------------------------------------------------------------------
+
+
+class SecretKeyStartupTests(TestCase):
+    """
+    The settings module is read once, at start, so each case starts a fresh interpreter
+    with its own environment and reads the result.
+    """
+
+    PLACEHOLDER = "dev-only-not-for-production"
+
+    def start(self, **env):
+        import os
+        import subprocess
+        import sys
+
+        full = {k: v for k, v in os.environ.items() if k not in ("DJANGO_DEBUG", "DJANGO_SECRET_KEY")}
+        full.update(env)
+        return subprocess.run(
+            [sys.executable, "-c", "import config.settings"],
+            cwd=settings.BASE_DIR, env=full, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_it_refuses_to_start_with_debug_off_and_no_key(self):
+        for env in ({"DJANGO_DEBUG": "0"}, {}):
+            with self.subTest(env=env):
+                result = self.start(**env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ImproperlyConfigured", result.stderr)
+                self.assertIn("DJANGO_SECRET_KEY", result.stderr)
+
+    def test_it_refuses_to_start_with_debug_off_and_the_placeholder_key(self):
+        # What docker compose passes when .env turns debug off and sets no key.
+        for key in (self.PLACEHOLDER, "", "   "):
+            with self.subTest(key=key):
+                result = self.start(DJANGO_DEBUG="0", DJANGO_SECRET_KEY=key)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("DJANGO_SECRET_KEY", result.stderr)
+
+    def test_the_default_local_setup_starts_on_the_placeholder(self):
+        # docker compose up with no .env: debug on, the placeholder key.
+        result = self.start(DJANGO_DEBUG="1", DJANGO_SECRET_KEY=self.PLACEHOLDER)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.start(DJANGO_DEBUG="1").returncode, 0)
+
+    def test_it_starts_with_debug_off_and_a_key_of_its_own(self):
+        result = self.start(DJANGO_DEBUG="0", DJANGO_SECRET_KEY="a-key-this-installation-chose")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_compose_still_defaults_to_debug_on_with_the_placeholder(self):
+        compose = (Path(settings.BASE_DIR) / "docker-compose.yml").read_text()
+        self.assertIn('DJANGO_DEBUG: "${DJANGO_DEBUG:-1}"', compose)
+        self.assertIn('DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-%s}"' % self.PLACEHOLDER, compose)
+
+
+# ---------------------------------------------------------------------------
+# The image build context
+# ---------------------------------------------------------------------------
+
+
+class DockerIgnoreTests(TestCase):
+    """`COPY . .` takes everything the ignore file leaves in, secrets included."""
+
+    def test_secrets_history_and_local_data_stay_out_of_the_image(self):
+        path = Path(settings.BASE_DIR) / ".dockerignore"
+        self.assertTrue(path.exists(), "the build context has no .dockerignore")
+        lines = {
+            line.strip() for line in path.read_text().splitlines()
+            if line.strip() and not line.startswith("#")
+        }
+        for entry in (".env", ".git", "vocadito-full/", "node_modules/", "recordings/", ".DS_Store"):
+            self.assertIn(entry, lines)
+        # Kept in on purpose: the example settings, and the demo corpus the suite reads.
+        self.assertIn("!.env.example", lines)
+        self.assertFalse(any(line.startswith("demo-data") for line in lines))
+
+
+# ---------------------------------------------------------------------------
+# The overlap check counts every overlapping pair and measures the time they share
+# ---------------------------------------------------------------------------
+
+
+class OverlapCountingTests(Fixtures):
+    """
+    A segment that contains later ones is where a walk comparing each segment with the
+    one just before it goes wrong twice: it measures from the long segment's end, and it
+    then forgets the long segment as soon as a short one has passed.
+    """
+
+    def overlap_findings(self, spans, params=None):
+        layer = self.make_layer(
+            [
+                {"index": i, "start_sec": start, "end_sec": end, "payload": {"hz": A4}}
+                for i, (start, end) in enumerate(spans)
+            ]
+        )
+        issues = run_for_layer(layer, params=params).issues.all()
+        return {i.code: i.details for i in issues if i.code.startswith("segments_overlap")}
+
+    def pairs(self, details):
+        return [(p["a_index"], p["b_index"], round(p["overlap_sec"], 6)) for p in details["pairs"]]
+
+    def test_a_contained_segment_overlaps_by_its_own_length(self):
+        found = self.overlap_findings([(0.0, 10.0), (1.0, 2.0)])["segments_overlap"]
+        self.assertEqual(found["total"], 1)
+        # One second is shared. Measured from the long segment's end it read as nine.
+        self.assertAlmostEqual(found["largest_overlap_sec"], 1.0)
+
+    def test_a_long_segment_is_compared_with_every_segment_inside_it(self):
+        found = self.overlap_findings([(0.0, 10.0), (1.0, 2.0), (3.0, 4.0)])["segments_overlap"]
+        self.assertEqual(found["total"], 2)
+        self.assertEqual(self.pairs(found), [(0, 1, 1.0), (0, 2, 1.0)])
+        self.assertAlmostEqual(found["largest_overlap_sec"], 1.0)
+
+    def test_three_segments_sounding_at_once_are_three_pairs(self):
+        found = self.overlap_findings([(0.0, 10.0), (1.0, 5.0), (2.0, 3.0)])["segments_overlap"]
+        self.assertEqual(found["total"], 3)
+        self.assertEqual(self.pairs(found), [(0, 1, 4.0), (0, 2, 1.0), (1, 2, 1.0)])
+
+    def test_a_small_contained_overlap_is_graded_by_the_time_shared(self):
+        # Half a millisecond inside a ten second segment: within note_pitch's 1 ms tolerance.
+        found = self.overlap_findings([(0.0, 10.0), (1.0, 1.0005)])
+        self.assertNotIn("segments_overlap", found)
+        within = found["segments_overlap_within_tolerance"]
+        self.assertEqual(within["total"], 1)
+        self.assertAlmostEqual(within["largest_overlap_sec"], 0.0005)
+
+    def test_a_partial_overlap_of_neighbours_is_measured_as_before(self):
+        found = self.overlap_findings([(1.0, 1.75), (1.5, 2.0), (2.0, 2.5)])["segments_overlap"]
+        self.assertEqual(found["total"], 1)
+        self.assertEqual(self.pairs(found), [(0, 1, 0.25)])
+
+    def test_segments_in_sequence_have_no_overlap(self):
+        self.assertEqual(self.overlap_findings([(0.0, 1.0), (1.0, 2.0), (2.5, 3.0)]), {})
+
+
+class DemoOverlapTests(DemoImportComparisonTests):
+    """The one overlap the demo corpus carries, which the item page shows a reader."""
+
+    def test_vocadito_21_a1_reports_its_23_microsecond_overlap_as_info(self):
+        corpus = self._import()
+        layer = corpus.items.get(song_id="vocadito_21").layers.get(stream_key="A1")
+        issues = [i for i in run_for_layer(layer).issues.all() if i.code.startswith("segments_overlap")]
+        self.assertEqual([(i.code, i.severity) for i in issues],
+                         [("segments_overlap_within_tolerance", "info")])
+        details = issues[0].details
+        self.assertEqual(details["total"], 1)
+        self.assertEqual(details["tolerance_sec"], 0.001)
+        self.assertAlmostEqual(details["largest_overlap_sec"], 23e-6, delta=1e-6)
+
+    def test_no_other_demo_layer_reports_an_overlap(self):
+        corpus = self._import()
+        run = run_for_corpus(corpus)
+        overlaps = [i for i in run.issues.all() if i.code.startswith("segments_overlap")]
+        self.assertEqual(len(overlaps), 1)
+        self.assertEqual(run.summary["by_severity"], {"info": 12})

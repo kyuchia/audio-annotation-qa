@@ -20,6 +20,7 @@ state every accepted key and its type, and that is what gets read.
 """
 from __future__ import annotations
 
+import math
 import numbers
 
 #: Keys accepted on top of a validator's declared defaults. A ValidationRun's params are
@@ -80,6 +81,12 @@ def _check_one(key: str, value, default, where: str):
         if isinstance(value, bool) or not isinstance(value, numbers.Real):
             raise ParamError(
                 f"{where}: {key} must be a number; got {_describe(value)}."
+            )
+        # 1e999 is valid JSON and arrives as infinity; a threshold of infinity or nan
+        # switches its check off while the run still records that it was applied.
+        if not math.isfinite(value):
+            raise ParamError(
+                f"{where}: {key} must be a finite number; got {_describe(value)}."
             )
         return float(value)
 

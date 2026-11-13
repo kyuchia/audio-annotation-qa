@@ -1,15 +1,32 @@
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-not-for-production")
+#: The key a local stack runs on. It is printed in this repository, so it signs nothing
+#: anyone should trust: with it, a session cookie or a password-reset link can be forged
+#: by whoever has read this file.
+DEV_SECRET_KEY = "dev-only-not-for-production"
+
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip() or DEV_SECRET_KEY
 
 #: Off unless asked for. The default is what runs wherever nobody set the variable, which
 #: is exactly where a debug build does the most damage: DEBUG=True serves a traceback with
 #: local variables and settings to anyone who triggers an error. docker-compose.yml sets
 #: DJANGO_DEBUG=1 for local development, so the development flow is unaffected.
 DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
+
+# With debug off this is an installation someone else can reach, and it starts only on a
+# key of its own. docker-compose.yml passes the development key when .env sets none, so
+# the check is on the value, and the default local stack (debug on) starts as before.
+if not DEBUG and SECRET_KEY == DEV_SECRET_KEY:
+    raise ImproperlyConfigured(
+        "DJANGO_SECRET_KEY must be set to a value of this installation's own when "
+        "DJANGO_DEBUG is off. Add a long random DJANGO_SECRET_KEY to .env, or set "
+        "DJANGO_DEBUG=1 for local development, where the built-in development key is used."
+    )
 
 #: Which Host headers this installation answers to, as a comma-separated list.
 #:

@@ -14,7 +14,7 @@ from __future__ import annotations
 from django.contrib import admin, messages
 from django.db.models import Count, Max, Min
 from django.urls import reverse
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
 from django.utils.safestring import mark_safe
 
 from .exporters import ExportError, item_to_session, suggested_session_filename
@@ -192,11 +192,13 @@ class ItemAdmin(admin.ModelAdmin):
     def metadata_row_pretty(self, obj):
         if not obj.metadata_row:
             return "(this item is not in the metadata CSV)"
-        rows = "".join(
-            f"<tr><th style='text-align:left;padding-right:1em'>{k}</th><td>{v}</td></tr>"
-            for k, v in obj.metadata_row.items()
+        # The row is whatever the metadata CSV held, so every key and value is escaped.
+        rows = format_html_join(
+            "",
+            "<tr><th style='text-align:left;padding-right:1em'>{}</th><td>{}</td></tr>",
+            obj.metadata_row.items(),
         )
-        return mark_safe(f"<table>{rows}</table>")
+        return format_html("<table>{}</table>", rows)
 
     @admin.action(description="Run validators")
     def action_validate(self, request, queryset):
@@ -331,12 +333,13 @@ class AnnotationLayerAdmin(admin.ModelAdmin):
         parts = []
         for node in obj.lineage():
             label = f"v{node.version} ({node.get_author_kind_display()})"
+            # The label carries a stored value, so it goes through format_html.
             if node.pk == obj.pk:
-                parts.append(f"<b>{label}</b>")
+                parts.append(format_html("<b>{}</b>", label))
             else:
                 url = reverse("admin:annotations_annotationlayer_change", args=[node.pk])
-                parts.append(f'<a href="{url}">{label}</a>')
-        return mark_safe(" -&gt; ".join(parts))
+                parts.append(format_html('<a href="{}">{}</a>', url, label))
+        return format_html_join(mark_safe(" -&gt; "), "{}", ((part,) for part in parts))
 
     @admin.action(description="Run validators")
     def action_validate(self, request, queryset):
@@ -425,6 +428,12 @@ class ReviewRecordAdmin(admin.ModelAdmin):
     list_display = ("layer", "decision", "timing_usable", "quality_class", "reviewer", "created_at")
     list_filter = ("decision", "timing_usable", "quality_class")
     search_fields = ("layer__item__song_id", "notes")
+
+    def delete_queryset(self, request, queryset):
+        # One at a time, so each removal goes through ReviewRecord.delete() and the layer's
+        # status follows what its remaining reviews say.
+        for review in queryset:
+            review.delete()
 
 
 @admin.register(Adjudication)

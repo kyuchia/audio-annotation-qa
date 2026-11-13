@@ -31,7 +31,7 @@ import math
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -356,6 +356,16 @@ class AnnotationLayer(TimeStamped):
         IMPORT = "import", "Imported from an existing file"
         SYSTEM = "system", "System-derived"
 
+    #: The status each review decision gives a layer. These three statuses are outcomes of
+    #: a review and are written only by one (see ReviewRecord.save); the others are
+    #: workflow states that make no claim about a decision.
+    STATUS_FOR_DECISION = {
+        "accept": Status.ACCEPTED,
+        "accept_with_notes": Status.ACCEPTED,
+        "request_changes": Status.CHANGES_REQUESTED,
+        "reject": Status.REJECTED,
+    }
+
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="layers")
     layer_type = models.CharField(
         max_length=64, help_text="A key in registry.LAYER_TYPES, e.g. note_pitch."
@@ -456,6 +466,27 @@ class AnnotationLayer(TimeStamped):
                 )
             if self.parent.version >= self.version:
                 raise ValidationError({"version": "version must be greater than the parent's"})
+        status_error = self.outcome_status_error(self.status, self if self.pk else None)
+        if status_error:
+            raise ValidationError({"status": status_error})
+
+    @classmethod
+    def outcome_status_error(cls, status, layer=None) -> str | None:
+        """
+        Why `status` cannot be written to `layer` directly, or None when it can.
+
+        A status that is the outcome of a review has to have that review behind it, so the
+        two cannot say different things about one layer.
+        """
+        if status not in cls.STATUS_FOR_DECISION.values():
+            return None
+        review = layer.latest_review() if layer is not None else None
+        if review is not None and cls.STATUS_FOR_DECISION.get(review.decision) == status:
+            return None
+        return (
+            f"The status {status} is the outcome of a review. Record the review on this "
+            f"layer and its status follows."
+        )
 
     # -- Convenience properties ---------------------------------------------
 
@@ -496,7 +527,29 @@ class AnnotationLayer(TimeStamped):
         return self.corrections.filter(is_active=True).order_by("order", "id")
 
     def latest_review(self):
-        return self.reviews.order_by("-created_at").first()
+        # The id settles two reviews stamped in the same instant, in arrival order.
+        return self.reviews.order_by("-created_at", "-id").first()
+
+    def sync_status_with_reviews(self, *, new_review: bool = False) -> None:
+        """
+        Make the status say what the latest review says. Called by ReviewRecord whenever a
+        review is written or removed, inside that write's transaction.
+
+        A superseded layer stays superseded when one of its existing reviews is edited or
+        removed; a review newly recorded on it sets the status as it does on any layer.
+        With no review left, a layer holding a review outcome goes back to awaiting one.
+        """
+        review = self.latest_review()
+        if review is not None:
+            if self.status == self.Status.SUPERSEDED and not new_review:
+                return
+            status = self.STATUS_FOR_DECISION[review.decision]
+        elif self.status in self.STATUS_FOR_DECISION.values():
+            status = self.Status.SUBMITTED
+        else:
+            return
+        self.status = status
+        self.save(update_fields=["status", "updated_at"])
 
     def resolved_segments(self) -> list[dict]:
         """A snapshot of the segments with the active corrections applied. The original
@@ -605,6 +658,14 @@ class LayerCorrection(TimeStamped):
     def __str__(self) -> str:
         return f"{self.layer} · {self.get_kind_display()}"
 
+    def clean(self):
+        # The admin's forms come through here; the API serializer asks the same function.
+        from .corrections import correction_param_errors
+
+        errs = correction_param_errors(self.kind, self.params)
+        if errs:
+            raise ValidationError({"params": errs})
+
 
 # ---------------------------------------------------------------------------
 # Review workflow (the primary one)
@@ -664,6 +725,26 @@ class ReviewRecord(TimeStamped):
 
     def __str__(self) -> str:
         return f"{self.layer} · {self.get_decision_display()}"
+
+    # A review and the status it gives its layer are one fact stored in two places, so
+    # they are written in one transaction, here, for every caller: the API, the admin and
+    # anything else that saves a review. The layer row is locked first, so two reviews
+    # arriving together are applied one after the other.
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            layer = AnnotationLayer.objects.select_for_update().get(pk=self.layer_id)
+            created = self._state.adding
+            super().save(*args, **kwargs)
+            layer.sync_status_with_reviews(new_review=created)
+
+    def delete(self, *args, **kwargs):
+        with transaction.atomic():
+            layer = AnnotationLayer.objects.select_for_update().filter(pk=self.layer_id).first()
+            result = super().delete(*args, **kwargs)
+            if layer is not None:
+                layer.sync_status_with_reviews()
+            return result
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,10 @@ columns mean, then hands the parsed rows to create_layer_with_segments().
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
+
+from django.core.exceptions import ValidationError
 
 from ..models import AnnotationLayer, Segment
 from ..registry import get_layer_type
@@ -71,7 +74,7 @@ def create_layer_with_segments(
         .first()
     )
     version = (latest.version + 1) if latest else 1
-    layer = AnnotationLayer.objects.create(
+    layer = AnnotationLayer(
         item=item,
         layer_type=layer_type,
         stream_key=stream_key,
@@ -83,6 +86,16 @@ def create_layer_with_segments(
         params=params or {},
         provenance=provenance or {},
     )
+    # clean() is where the model says what a parent may be: a layer of the same item, type
+    # and stream. Nothing calls it on this path unless this does, and a caller is free to
+    # name any layer as the parent.
+    try:
+        layer.clean()
+    except ValidationError as exc:
+        raise IngestError(
+            f"{layer_type}/{stream_key or 'default'}: " + "; ".join(exc.messages)
+        ) from exc
+    layer.save()
     Segment.objects.bulk_create(
         [
             Segment(
@@ -113,7 +126,14 @@ def _validate_rows(spec, rows: list[dict], *, layer_type: str, stream_key: str) 
     for position, r in enumerate(rows):
         where = f"row {r.get('index', position)}"
         before = len(problems)
-        if r["end_sec"] < r["start_sec"]:
+        if not (math.isfinite(r["start_sec"]) and math.isfinite(r["end_sec"])):
+            # Checked first: nan compares false against everything, so the ordering test
+            # below would pass it.
+            problems.append(
+                f"{where}: start_sec and end_sec must be finite numbers, got "
+                f"{r['start_sec']:g} and {r['end_sec']:g}"
+            )
+        elif r["end_sec"] < r["start_sec"]:
             problems.append(f"{where}: end_sec {r['end_sec']:g} is before start_sec {r['start_sec']:g}")
         for err in spec.validate_payload(r.get("payload") or {}):
             problems.append(f"{where}: {err}")

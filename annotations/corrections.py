@@ -8,7 +8,99 @@ tell the corrected data from the data as it arrived.
 """
 from __future__ import annotations
 
+import math
+import numbers
 from typing import Iterable
+
+#: What each kind of correction takes: {kind: {param: (requirement, lowest, highest)}}.
+#: The bounds on the two pitch shifts are what keeps the factor a float can hold; a time
+#: is bounded only by being a real number of seconds.
+_NUMBER_PARAMS = {
+    "octave_shift": {"octaves": (-10, 10)},
+    "cents_shift": {"cents": (-12000, 12000)},
+    "time_offset": {"seconds": (None, None)},
+    "trim_tail": {"after_sec": (0, None)},
+    "drop_segments": {},
+}
+#: The kinds that take a list of segment indices, and whether they need one.
+_INDICES_REQUIRED = {"octave_shift": False, "cents_shift": False, "drop_segments": True}
+
+
+def correction_param_errors(kind: str, params) -> list[str]:
+    """
+    Why these params cannot be applied by this kind of correction, as sentences for the
+    person who typed them. An empty list means apply_corrections() will run on them.
+
+    A correction is applied on every read of its layer, so this is asked once, when the
+    correction is written, by the API serializer and by LayerCorrection.clean() alike.
+    """
+    numbers_for = _NUMBER_PARAMS.get(kind)
+    if numbers_for is None:
+        return [f"{kind} is outside the kinds of correction this system applies."]
+    if not isinstance(params, dict):
+        return [f"{kind} takes its params as a JSON object, for example {_example(kind)}."]
+
+    accepted = list(numbers_for) + (["indices"] if kind in _INDICES_REQUIRED else [])
+    errs: list[str] = []
+    unknown = sorted(str(k) for k in set(params) - set(accepted))
+    if unknown:
+        errs.append(
+            f"{kind} takes {' and '.join(accepted)}; remove {', '.join(unknown)}."
+        )
+
+    for name, (low, high) in numbers_for.items():
+        value = params.get(name)
+        ok = (
+            isinstance(value, numbers.Real)
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and (low is None or value >= low)
+            and (high is None or value <= high)
+        )
+        if not ok:
+            errs.append(
+                f"{kind} needs {name} as {_range(low, high)}, for example {_example(kind)}; "
+                f"got {_show(params, name)}."
+            )
+
+    if kind in _INDICES_REQUIRED and ("indices" in params or _INDICES_REQUIRED[kind]):
+        value = params.get("indices")
+        ok = (
+            isinstance(value, list)
+            and all(isinstance(i, int) and not isinstance(i, bool) and i >= 0 for i in value)
+            and (value or not _INDICES_REQUIRED[kind])
+        )
+        if not ok:
+            errs.append(
+                f"{kind} needs indices as a list of segment index numbers, for example "
+                f"[0, 4]; got {_show(params, 'indices')}."
+            )
+    return errs
+
+
+def _range(low, high) -> str:
+    if low is not None and high is not None:
+        return f"a number from {low} to {high}"
+    if low is not None:
+        return f"a number of {low} or more"
+    return "a finite number"
+
+
+def _example(kind: str) -> str:
+    return {
+        "octave_shift": '{"octaves": 1}',
+        "cents_shift": '{"cents": -50}',
+        "time_offset": '{"seconds": 0.25}',
+        "trim_tail": '{"after_sec": 30}',
+        "drop_segments": '{"indices": [0, 4]}',
+    }[kind]
+
+
+def _show(params: dict, name: str) -> str:
+    if name not in params:
+        return "nothing"
+    text = repr(params[name])
+    return text if len(text) <= 40 else f"{text[:37]}..."
 
 
 def apply_corrections(rows: list[dict], corrections: Iterable) -> list[dict]:

@@ -1,0 +1,32 @@
+# What `COPY . .` leaves out of the image. Under docker compose the project directory is
+# mounted over /app, so nothing here is needed inside the image at run time.
+
+# Secrets and repository history
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+
+# Source data kept outside the repository; compose mounts datasets read-only at /data and
+# /recordings. demo-data/ stays in: the test suite reads it.
+vocadito-full/
+recordings/
+
+# Frontend dependencies and build output; the frontend runs in its own container
+node_modules/
+**/node_modules/
+frontend/dist/
+
+# Local-only files
+.DS_Store
+**/.DS_Store
+__pycache__/
+**/__pycache__/
+*.pyc
+staticfiles/
+media/
+out/
+.agents/
+skills-lock.json
+.dockerignore

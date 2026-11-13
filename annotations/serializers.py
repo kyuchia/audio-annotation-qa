@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, IntegerField, Max, Min, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 from rest_framework import serializers
@@ -17,6 +18,7 @@ from .models import (
     ValidationIssue,
     ValidationRun,
 )
+from .corrections import correction_param_errors
 from .importers.f0_csv import CONTRACTS, FROM_HEADER
 from .registry import LAYER_TYPES, get_layer_type
 
@@ -38,11 +40,9 @@ class SegmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Segment
         fields = ["id", "index", "start_sec", "end_sec", "duration_sec", "payload"]
-
-    def validate(self, attrs):
-        if attrs.get("end_sec", 0) < attrs.get("start_sec", 0):
-            raise serializers.ValidationError("end_sec may not be earlier than start_sec")
-        return attrs
+        # Output only: segments are written by the import funnel (services/ingest.py),
+        # which is where their rules are checked.
+        read_only_fields = fields
 
 
 class LayerCorrectionSerializer(serializers.ModelSerializer):
@@ -65,6 +65,17 @@ class LayerCorrectionSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate(self, attrs):
+        # Checked on every write, with the stored kind and params standing in for whichever
+        # of the two an edit leaves out: a correction is applied each time its layer is
+        # read, so one the overlay cannot apply would fail every read of that layer.
+        kind = attrs.get("kind", getattr(self.instance, "kind", None))
+        params = attrs.get("params", getattr(self.instance, "params", {}))
+        errs = correction_param_errors(kind, params)
+        if errs:
+            raise serializers.ValidationError({"params": errs})
+        return attrs
+
 
 class ReviewRecordSerializer(serializers.ModelSerializer):
     reviewer_name = serializers.CharField(source="reviewer.username", read_only=True)
@@ -77,6 +88,11 @@ class ReviewRecordSerializer(serializers.ModelSerializer):
             "timing_usable", "quality_class", "metrics", "notes", "created_at",
         ]
         read_only_fields = ["reviewer"]
+
+    def validate_layer(self, value):
+        if self.instance is not None and value.pk != self.instance.layer_id:
+            raise serializers.ValidationError("A review stays with the layer it was written for.")
+        return value
 
 
 class LayerSerializer(serializers.ModelSerializer):
@@ -126,15 +142,21 @@ class LayerSerializer(serializers.ModelSerializer):
         return {"first_sec": agg["first"], "last_sec": agg["last"]}
 
     def validate(self, attrs):
-        layer_type = attrs.get("layer_type", getattr(self.instance, "layer_type", None))
-        spec = get_layer_type(layer_type)
-        if spec is None:
-            raise serializers.ValidationError(
-                {"layer_type": f"Unregistered annotation type: {layer_type}"}
-            )
-        errs = spec.validate_params(attrs.get("params", {}) or {})
-        if errs:
-            raise serializers.ValidationError({"params": errs})
+        # The model states what a layer may be (a registered type, params that fit it, a
+        # parent of the same item, type and stream at a lower version, a status with its
+        # review behind it) in clean(), which a serializer does not call by itself. The
+        # layer as this request would leave it is built here and asked, so the API holds
+        # the rules the admin's forms already do.
+        probe = AnnotationLayer()
+        if self.instance is not None:
+            for field in AnnotationLayer._meta.concrete_fields:
+                setattr(probe, field.attname, getattr(self.instance, field.attname))
+        for name, value in attrs.items():
+            setattr(probe, name, value)
+        try:
+            probe.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict) from exc
         return attrs
 
 
@@ -224,7 +246,7 @@ class ItemDetailSerializer(ItemSerializer):
 
 class ValidationIssueSerializer(serializers.ModelSerializer):
     item_song_id = serializers.CharField(source="item.song_id", read_only=True)
-    layer_label = serializers.CharField(source="layer.__str__", read_only=True)
+    layer_label = serializers.SerializerMethodField()
 
     class Meta:
         model = ValidationIssue
@@ -236,6 +258,11 @@ class ValidationIssueSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "run", "code", "severity", "message", "details", "corpus", "item", "layer",
         ]
+
+    def get_layer_label(self, obj):
+        # A finding about an item or a corpus names no layer, so it has no layer label;
+        # item_song_id is what says where it belongs.
+        return str(obj.layer) if obj.layer_id else None
 
 
 class ValidationRunSerializer(serializers.ModelSerializer):
@@ -260,6 +287,13 @@ class LayerComparisonSerializer(serializers.ModelSerializer):
             "comparator_key", "params", "summary", "discrepancies", "created_at",
         ]
         read_only_fields = ["comparator_key", "summary", "discrepancies"]
+        # The one value parsed JSON can hold that a JSON field refuses is a non-finite
+        # number, so that refusal is worded for what it is.
+        extra_kwargs = {
+            "params": {
+                "error_messages": {"invalid": "Each tolerance in params must be a finite number."}
+            }
+        }
 
 
 class AdjudicationSerializer(serializers.ModelSerializer):

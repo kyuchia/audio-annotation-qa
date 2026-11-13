@@ -4,6 +4,7 @@ from django.db.models import Count, Exists, OuterRef, Q
 from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
@@ -104,9 +105,9 @@ class ItemViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = ItemSerializer.annotate(Item.objects.select_related("corpus"))
         p = self.request.query_params
-        if corpus := p.get("corpus"):
+        if corpus := _text_param(p, "corpus"):
             cond = Q(corpus__slug=corpus)
-            if corpus.isdigit():
+            if _is_id(corpus):
                 cond |= Q(corpus_id=int(corpus))
             qs = qs.filter(cond)
         if p.get("in_metadata") == "false":
@@ -120,7 +121,7 @@ class ItemViewSet(viewsets.ModelViewSet):
             qs = qs.filter(Exists(item_issues(OuterRef("pk"), NEEDS_ATTENTION)))
         if p.get("unprobed") == "true":
             qs = qs.filter(sample_rate__isnull=True)
-        if q := p.get("q"):
+        if q := _text_param(p, "q"):
             qs = qs.filter(Q(song_id__icontains=q) | Q(display_name__icontains=q))
         return qs.order_by("song_id")
 
@@ -222,7 +223,7 @@ class ItemViewSet(viewsets.ModelViewSet):
         item = self.get_object()
         qs = item.layers.all()
         if ids := request.query_params.get("layers"):
-            qs = qs.filter(id__in=[int(i) for i in ids.split(",") if i.strip().isdigit()])
+            qs = qs.filter(id__in=_id_list_param(request.query_params, "layers"))
         elif request.query_params.get("accepted_only") == "true":
             qs = qs.filter(status=AnnotationLayer.Status.ACCEPTED)
         else:
@@ -246,8 +247,10 @@ class LayerViewSet(viewsets.ModelViewSet):
             segment_count=Count("segments")
         )
         p = self.request.query_params
-        for field in ("item", "layer_type", "stream_key", "status"):
-            if value := p.get(field):
+        if (item := _id_param(p, "item")) is not None:
+            qs = qs.filter(item=item)
+        for field in ("layer_type", "stream_key", "status"):
+            if value := _text_param(p, field):
                 qs = qs.filter(**{field: value})
         if p.get("authoritative_only") == "true":
             qs = qs.filter(derived_from__isnull=True)
@@ -287,16 +290,9 @@ class LayerViewSet(viewsets.ModelViewSet):
             return Response(ReviewRecordSerializer(layer.reviews.all(), many=True).data)
         ser = ReviewRecordSerializer(data={**request.data, "layer": layer.pk})
         ser.is_valid(raise_exception=True)
+        # Saving the review writes the layer's status with it, in one transaction
+        # (ReviewRecord.save), so the two cannot disagree.
         review = ser.save(reviewer=_user(request))
-        # The review outcome drives the layer status, so the two cannot disagree
-        mapping = {
-            ReviewRecord.Decision.ACCEPT: AnnotationLayer.Status.ACCEPTED,
-            ReviewRecord.Decision.ACCEPT_WITH_NOTES: AnnotationLayer.Status.ACCEPTED,
-            ReviewRecord.Decision.REQUEST_CHANGES: AnnotationLayer.Status.CHANGES_REQUESTED,
-            ReviewRecord.Decision.REJECT: AnnotationLayer.Status.REJECTED,
-        }
-        layer.status = mapping[review.decision]
-        layer.save(update_fields=["status", "updated_at"])
         return Response(ReviewRecordSerializer(review).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["get"])
@@ -316,15 +312,20 @@ class LayerViewSet(viewsets.ModelViewSet):
         return resp
 
 
-class SegmentViewSet(viewsets.ModelViewSet):
+class SegmentViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Reads only. Stored segments are the file as it was imported and are never modified in
+    place: a change arrives as a new layer version (upload-annotation) or as a correction
+    laid over the layer.
+    """
+
     queryset = Segment.objects.select_related("layer")
     serializer_class = SegmentSerializer
     pagination_class = SegmentPagination
-    permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if layer := self.request.query_params.get("layer"):
+        if (layer := _id_param(self.request.query_params, "layer")) is not None:
             qs = qs.filter(layer_id=layer)
         return qs
 
@@ -336,7 +337,7 @@ class LayerCorrectionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if layer := self.request.query_params.get("layer"):
+        if (layer := _id_param(self.request.query_params, "layer")) is not None:
             qs = qs.filter(layer_id=layer)
         return qs
 
@@ -362,7 +363,7 @@ class ValidationRunViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["get"])
     def issues(self, request, pk=None):
         qs = self.get_object().issues.select_related("item", "layer")
-        if severity := request.query_params.get("severity"):
+        if severity := _text_param(request.query_params, "severity"):
             qs = qs.filter(severity=severity)
         if request.query_params.get("open") == "true":
             qs = qs.filter(acknowledged=False)
@@ -376,8 +377,11 @@ class ValidationIssueViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = ValidationIssue.objects.select_related("item", "layer")
         p = self.request.query_params
-        for field in ("run", "item", "layer", "severity", "code"):
-            if value := p.get(field):
+        for field in ("run", "item", "layer"):
+            if (value := _id_param(p, field)) is not None:
+                qs = qs.filter(**{field: value})
+        for field in ("severity", "code"):
+            if value := _text_param(p, field):
                 qs = qs.filter(**{field: value})
         if p.get("open") == "true":
             qs = qs.unacknowledged()
@@ -419,7 +423,7 @@ class LayerComparisonViewSet(viewsets.ModelViewSet):
             value = p.get(field)
             if not value:
                 continue
-            if not str(value).isdigit():
+            if not _is_id(value):
                 return qs.none()
             qs = qs.filter(Q(**{sides[0]: value}) | Q(**{sides[1]: value})).distinct()
         return qs
@@ -480,6 +484,55 @@ def me(request):
     return Response(
         {"authenticated": signed_in, "username": user.get_username() if signed_in else None}
     )
+
+
+def _is_id(raw: str) -> bool:
+    """Whether a query value is a row id. ASCII digits only: str.isdigit() also accepts
+    characters such as a superscript two, which int() and the database then refuse."""
+    return raw.isascii() and raw.isdigit()
+
+
+def _shown(raw: str) -> str:
+    text = repr(raw)
+    return text if len(text) <= 40 else f"{text[:37]}..."
+
+
+def _id_param(params, name: str) -> int | None:
+    """
+    A query parameter that filters by a row id, or None when the request leaves it out.
+
+    Anything else is a 400 that names the parameter. Handing the raw string to the ORM
+    raises inside the query, and the visitor is then told the server failed over a value
+    they typed.
+    """
+    raw = params.get(name)
+    if not raw:
+        return None
+    if not _is_id(raw):
+        raise ValidationError(
+            {name: [f"{name} takes a whole number id, such as {name}=4; got {_shown(raw)}."]}
+        )
+    return int(raw)
+
+
+def _id_list_param(params, name: str) -> list[int]:
+    """A comma-separated list of row ids, checked the same way."""
+    raw = params.get(name) or ""
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if not parts or any(not _is_id(part) for part in parts):
+        raise ValidationError(
+            {name: [f"{name} takes ids separated by commas, such as {name}=7,8; got {_shown(raw)}."]}
+        )
+    return [int(part) for part in parts]
+
+
+def _text_param(params, name: str) -> str | None:
+    """A query parameter matched as text. The database stores text without NUL characters
+    and refuses a query holding one, so that single case is answered here."""
+    raw = params.get(name)
+    if raw and "\x00" in raw:
+        raise ValidationError({name: [f"{name} takes plain text."]})
+    return raw
 
 
 def _user(request):

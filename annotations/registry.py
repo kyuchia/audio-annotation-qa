@@ -10,6 +10,7 @@ Models, serializers and admin all stay untouched.
 """
 from __future__ import annotations
 
+import math
 import numbers
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
@@ -34,6 +35,9 @@ class PayloadField:
         if self.kind == "number":
             if not isinstance(value, numbers.Real) or isinstance(value, bool):
                 return [f"{self.name}: expected a number, got {type(value).__name__}"]
+            # nan compares false against every bound, so it would pass both range checks.
+            if not math.isfinite(value):
+                return [f"{self.name}: expected a finite number, got {value}"]
             if self.minimum is not None and value < self.minimum:
                 errs.append(f"{self.name}: {value} is below the minimum {self.minimum}")
             if self.maximum is not None and value > self.maximum:

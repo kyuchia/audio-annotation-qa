@@ -418,20 +418,31 @@ def segments_monotonic(layer, params=None) -> list[Finding]:
     out.extend(_report_time_order(layer, rows))
     ordered = sorted(rows, key=lambda r: (r["start_sec"], r["index"]))
 
-    prev = None
+    # Every earlier segment still sounding when a segment begins is a pair, and the size of
+    # an overlap is the time the two share: from the later onset to whichever of them ends
+    # first. Comparing only against the segment just before, and measuring to that
+    # segment's end, gets both wrong as soon as one segment contains another. With
+    # (0, 10), (1, 2), (3, 4) it reports one pair overlapping by 9 s, where there are two
+    # pairs, (0, 10) with each of the others, sharing 1 s apiece.
+    still_open: list[dict] = []
     overlaps = []
     for r in ordered:
-        if prev is not None and r["start_sec"] < prev["end_sec"] - _TOUCHING_EPSILON_SEC:
-            overlaps.append(
-                {
-                    "a_index": prev["index"],
-                    "b_index": r["index"],
-                    "a_end_sec": prev["end_sec"],
-                    "b_start_sec": r["start_sec"],
-                    "overlap_sec": prev["end_sec"] - r["start_sec"],
-                }
-            )
-        prev = r
+        still_open = [
+            o for o in still_open if o["end_sec"] - r["start_sec"] > _TOUCHING_EPSILON_SEC
+        ]
+        for o in still_open:
+            shared = min(o["end_sec"], r["end_sec"]) - r["start_sec"]
+            if shared > _TOUCHING_EPSILON_SEC:
+                overlaps.append(
+                    {
+                        "a_index": o["index"],
+                        "b_index": r["index"],
+                        "a_end_sec": o["end_sec"],
+                        "b_start_sec": r["start_sec"],
+                        "overlap_sec": shared,
+                    }
+                )
+        still_open.append(r)
 
     beyond = [o for o in overlaps if o["overlap_sec"] > tolerance]
     within = [o for o in overlaps if o["overlap_sec"] <= tolerance]
